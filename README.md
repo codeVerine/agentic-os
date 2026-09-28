@@ -99,11 +99,23 @@ Notes:
   per project as it does on the Mac.
 
 One login serves every project, including several sessions running at once. All containers run in the same
-Docker Desktop Linux VM and see the same files, so the agents' own lock files work across containers exactly
-as they do between processes on one machine: Claude Code and Pi lock their credential files while refreshing
-tokens, and Codex and OpenCode share their files as several instances on one Mac do. The one exception is
-Codex's background server, whose pid and socket files only make sense inside one container, so `aos` gives
-each Codex launch a fresh directory for them.
+Docker Desktop Linux VM and see the same files, and file locks taken in one container block the others, so
+an agent's own lock files work across containers as they do between processes on one machine:
+
+- Claude Code and Pi lock their credential files while refreshing tokens.
+- Codex (0.158) re-reads `auth.json` before refreshing its ChatGPT tokens, but its refresh lock only covers
+  one process, and every refresh replaces the refresh token. Two containers refreshing at the same moment
+  would send the same refresh token, and the second would be rejected as already used. `aos codex` therefore
+  starts a small local server in each container (`docker/codex-refresh.mjs`) and points Codex's refresh
+  requests at it. It runs each refresh under a lock directory in `secrets/codex/` and gives a refresh that
+  still carries the replaced token the same new tokens, so only one refresh reaches OpenAI.
+- OpenCode (1.18.33) keeps logins in `auth.json`. The OpenCode subscription (Zen or Go) and API keys never
+  refresh, and neither does a GitHub Copilot login. OpenCode's built-in ChatGPT login does refresh with the
+  same rotating tokens as Codex, under an in-process guard only, and OpenCode offers no way to redirect it.
+  Use `aos codex` for the ChatGPT subscription when several sessions may run at once.
+
+Codex's background server keeps pid and socket files that only make sense inside one container, so `aos`
+also gives each Codex launch a fresh directory for them.
 
 ### API keys: `~/AgenticOS/secrets/env`
 

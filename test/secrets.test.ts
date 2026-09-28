@@ -48,6 +48,24 @@ describe("parseSecretsEnv", () => {
     assert.equal(parseSecretsEnv("A=1\r\nB=2\r\n").shared.get("B"), "2");
   });
 
+  test("strips inline comments from unquoted values only", () => {
+    const secrets = parseSecretsEnv(
+      [
+        "OPENROUTER_API_KEY=sk-or-abc # personal",
+        "GROQ_API_KEY=gsk#1\t# tab comment",
+        `OPENAI_API_KEY="sk # kept" # dropped`,
+        "GEMINI_API_KEY='g # kept'",
+        "COMMENT_ONLY= # nothing here",
+      ].join("\n"),
+    );
+    assert.deepEqual(Object.fromEntries(secrets.shared), {
+      OPENROUTER_API_KEY: "sk-or-abc",
+      GROQ_API_KEY: "gsk#1",
+      OPENAI_API_KEY: "sk # kept",
+      GEMINI_API_KEY: "g # kept",
+    });
+  });
+
   test("reports malformed lines with their line number", () => {
     assert.throws(() => parseSecretsEnv("A=1\nnot a pair", "env"), /env line 2: expected KEY=VALUE/);
     assert.throws(() => parseSecretsEnv("1BAD=x", "env"), /env line 1: "1BAD" is not a valid variable name/);

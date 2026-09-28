@@ -14,6 +14,7 @@ export interface SecretsEnv {
 
 const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SECTION = /^\[\s*([^\]]*?)\s*\]$/;
+const INLINE_COMMENT = /^(\s+#.*)?$/;
 
 export const EMPTY_SECRETS: SecretsEnv = { shared: new Map(), perAgent: new Map() };
 
@@ -55,19 +56,22 @@ export function parseSecretsEnv(content: string, source = "secrets env"): Secret
     if (eq === -1) throw new AosError(`${where}: expected KEY=VALUE.`);
     const key = body.slice(0, eq).trim();
     if (!KEY.test(key)) throw new AosError(`${where}: "${key}" is not a valid variable name.`);
-    const value = unquote(body.slice(eq + 1).trim());
+    const value = parseValue(body.slice(eq + 1));
     if (value !== "") section.set(key, value);
   });
 
   return { shared, perAgent };
 }
 
-function unquote(value: string): string {
-  if (value.length >= 2) {
-    const first = value[0];
-    if ((first === '"' || first === "'") && value.endsWith(first)) return value.slice(1, -1);
+/** Quoted values are taken literally; unquoted values end at a whitespace-prefixed `#` comment. */
+function parseValue(raw: string): string {
+  const value = raw.trim();
+  const quote = value[0];
+  if (quote === '"' || quote === "'") {
+    const end = value.indexOf(quote, 1);
+    if (end !== -1 && INLINE_COMMENT.test(value.slice(end + 1))) return value.slice(1, end);
   }
-  return value;
+  return raw.replace(/\s+#.*$/, "").trim();
 }
 
 export function readSecretsEnv(path: string): SecretsEnv {

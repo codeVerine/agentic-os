@@ -43,6 +43,8 @@ RUN npm install -g \
 RUN mkdir -p /etc/codex \
   && printf 'sandbox_mode = "danger-full-access"\n' > /etc/codex/config.toml
 
+COPY codex-refresh.mjs /usr/local/lib/aos/codex-refresh.mjs
+
 # Sandcastle's docker provider runs the container as --user <host uid>:<host gid>
 # and refuses to start when the image user does not match, so the base image's
 # "node" user is renamed to "agent" and moved to the host's UID/GID.

@@ -26,6 +26,10 @@ export interface AgentSpec {
   readonly launchScopedDirs: readonly string[];
   /** Non-secret environment that points the agent at its mounted state. */
   readonly configEnv: Readonly<Record<string, string>>;
+  /** Shell command run in the container before the agent starts, only for `aos <agent>` launches. */
+  readonly launchSetup?: string;
+  /** Environment for `aos <agent>` launches only, on top of configEnv. */
+  readonly launchEnv: Readonly<Record<string, string>>;
   /** Keys from the shared secrets env file this agent can use. */
   readonly envKeys: readonly string[];
   /** Files under secrets/<agent>/ that exist once the agent's own login has completed. */
@@ -65,6 +69,7 @@ export const AGENTS: Readonly<Record<AgentName, AgentSpec>> = {
     launchScopedDirs: [],
     // Without CLAUDE_CONFIG_DIR, Claude Code keeps .claude.json in $HOME, outside the mount.
     configEnv: { CLAUDE_CONFIG_DIR: `${SANDBOX_HOME}/.claude` },
+    launchEnv: {},
     envKeys: [...ANTHROPIC_KEYS, "CLAUDE_CODE_OAUTH_TOKEN"],
     loginFiles: [".credentials.json"],
     loginCommand: ["auth", "login"],
@@ -79,6 +84,10 @@ export const AGENTS: Readonly<Record<AgentName, AgentSpec>> = {
     // its socket in the container's /tmp; neither is meaningful to another container.
     launchScopedDirs: [`${SANDBOX_HOME}/.codex/app-server-daemon`, `${SANDBOX_HOME}/.codex/app-server-control`],
     configEnv: { CODEX_HOME: `${SANDBOX_HOME}/.codex` },
+    // Codex refreshes its rotating ChatGPT tokens under an in-process lock only;
+    // this local server serializes refreshes across containers (docker/codex-refresh.mjs).
+    launchSetup: "node /usr/local/lib/aos/codex-refresh.mjs",
+    launchEnv: { CODEX_REFRESH_TOKEN_URL_OVERRIDE: "http://127.0.0.1:48123/oauth/token" },
     envKeys: [...OPENAI_KEYS, "CODEX_API_KEY", "OPENROUTER_API_KEY"],
     loginFiles: ["auth.json"],
     loginCommand: ["login"],
@@ -96,6 +105,7 @@ export const AGENTS: Readonly<Record<AgentName, AgentSpec>> = {
     ],
     launchScopedDirs: [],
     configEnv: {},
+    launchEnv: {},
     envKeys: [...ANTHROPIC_KEYS, ...OPENAI_KEYS, ...ROUTER_KEYS, ...OTHER_PROVIDER_KEYS],
     loginFiles: ["data/auth.json"],
     loginCommand: ["auth", "login"],
@@ -108,6 +118,7 @@ export const AGENTS: Readonly<Record<AgentName, AgentSpec>> = {
     stateMounts: [{ subdir: "", sandboxPath: `${SANDBOX_HOME}/.pi/agent` }],
     launchScopedDirs: [],
     configEnv: { PI_CODING_AGENT_DIR: `${SANDBOX_HOME}/.pi/agent` },
+    launchEnv: {},
     envKeys: [...ANTHROPIC_KEYS, "ANTHROPIC_OAUTH_TOKEN", ...OPENAI_KEYS, ...ROUTER_KEYS, ...OTHER_PROVIDER_KEYS],
     loginFiles: ["auth.json"],
     loginCommand: [],

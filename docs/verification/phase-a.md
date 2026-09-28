@@ -18,7 +18,8 @@ No real subscription or API credentials were available to the implementing agent
   `codex login --with-api-key`, OpenCode's "OpenCode Zen" API-key prompt, and Pi's `/login` with an
   OpenRouter key. This proves that one login in `secrets/<agent>/` serves every project with no second login
   prompt, including concurrent sessions. It does not prove that a real model call works, and live token
-  refresh races were not exercised, because no OAuth tokens were available.
+  refresh races were not exercised, because no OAuth tokens were available. See "Token refresh with a
+  shared login" for what the agents' source shows and what aos adds for Codex.
 - The real subscription logins (Codex device code, Claude subscription, OpenCode subscription) reach their
   prompts in the container (see "Login flows") and are **pending** the captain.
 
@@ -235,6 +236,38 @@ empty and `state/run/` held no leftover directories.
   directory over `~/.codex/app-server-daemon` and `~/.codex/app-server-control`. After the change, two
   concurrent Codex sessions each had their own daemon state under `state/run/codex-*`, and `aos` removed
   both directories on exit.
+
+## Token refresh with a shared login: what the agents' source shows
+
+Read from the pinned sources: `openai/codex` tag `rust-v0.158.0` (`codex-rs/login/src/auth/manager.rs`,
+`storage.rs`) and `anomalyco/opencode` tag `v1.18.33` (`packages/opencode/src/auth/index.ts`,
+`src/plugin/openai/codex.ts`, `src/plugin/index.ts`).
+
+- **Codex**, ChatGPT login: `AuthManager::refresh_token` takes `refresh_lock`, a `tokio` semaphore that only
+  covers one process. Inside it, it reloads `auth.json` and skips the refresh when the file changed
+  ("guarded reload"). Otherwise it posts the refresh token to `https://auth.openai.com/oauth/token`, or to
+  `CODEX_REFRESH_TOKEN_URL_OVERRIDE` when set, and saves the returned tokens. `FileAuthStorage::save`
+  truncates and rewrites `auth.json` with no file lock. The refresh token rotates: Codex handles the
+  `refresh_token_reused` error ("your refresh token was already used"). Refreshes one after another are
+  safe, because the second process re-reads the file first. Two containers whose refreshes overlap both
+  send the old token, and the second is rejected.
+- **aos fix**: `aos codex` sets `CODEX_REFRESH_TOKEN_URL_OVERRIDE` to `http://127.0.0.1:48123/oauth/token`
+  and starts `docker/codex-refresh.mjs` in the container before Codex. The server runs each refresh under the
+  `secrets/codex/.aos-refresh.lock` directory (mkdir locks block across containers, see above), forwards it
+  to OpenAI, and records the successful response in `secrets/codex/.aos-refresh.json` (mode 0600). A refresh
+  that carries the token the last rotation replaced gets that recorded response instead of a second upstream
+  call. `test/codex-refresh.test.ts` runs two such servers on one `CODEX_HOME` against a fake authority that
+  rejects reused tokens: two concurrent refreshes reach the authority once and both get the new tokens.
+- **OpenCode**: `Auth.set` reads and rewrites the whole `auth.json` with no file lock. The OpenCode
+  subscription (Zen, Go) and other API keys are stored as `api` entries and never refresh. The GitHub Copilot
+  login stores a GitHub token that does not rotate. The built-in ChatGPT login refreshes against
+  `https://auth.openai.com/oauth/token` with a rotating refresh token, guarded only by an in-process promise.
+  Its issuer can only be changed through plugin options that OpenCode fills in internally, so aos has no way
+  to serialize it. The README tells the captain to use `aos codex` for the ChatGPT subscription.
+
+Still needs a real subscription login: that OpenAI rejects a reused refresh token as the source expects, that
+Codex accepts the lock server's responses end to end, and whether OpenAI revokes the whole token family after
+a reuse (which would make the OpenCode ChatGPT case log out every session).
 
 ## Environment and mounts
 

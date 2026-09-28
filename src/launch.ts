@@ -35,7 +35,8 @@ export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[],
   // runs from a second, per-project mount of the same host directory instead.
   const sandboxProjectRoot = `${SANDBOX_PROJECTS_DIR}/${project.name}`;
   const workdir = project.subdir ? `${sandboxProjectRoot}/${project.subdir}` : sandboxProjectRoot;
-  const argv = ["sh", "-c", 'cd "$1" && shift && exec "$@"', "aos", workdir, spec.command, ...agentArgs];
+  const setup = spec.launchSetup ? `${spec.launchSetup} && ` : "";
+  const argv = ["sh", "-c", `cd "$1" && shift && ${setup}exec "$@"`, "aos", workdir, spec.command, ...agentArgs];
 
   mkdirSync(paths.run, { recursive: true });
   const runDir = mkdtempSync(join(paths.run, `${spec.name}-`));
@@ -66,7 +67,7 @@ export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[],
       sandbox,
       cwd: project.root,
       branchStrategy: { type: "head" },
-      env: { ...terminalEnv(options.hostEnv), ...spec.configEnv, ...selectAgentEnv(spec, secrets) },
+      env: { ...terminalEnv(options.hostEnv), ...spec.configEnv, ...spec.launchEnv, ...selectAgentEnv(spec, secrets) },
     });
     return result.exitCode;
   } finally {
