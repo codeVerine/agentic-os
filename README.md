@@ -58,9 +58,10 @@ it from. The repository needs at least one commit (a Sandcastle requirement); a 
 repository is refused and `aos` never runs `git init` for you.
 
 A linked worktree (`git worktree add`) works too: Sandcastle also mounts the main repository's `.git` at its
-host path so git inside the container can reach it. A worktree whose `.git` file uses a relative gitdir, and a
-submodule, are refused, because git cannot resolve their repository from inside the container; run `aos` from
-the main checkout or the superproject instead.
+host path so git inside the container can reach it. A worktree whose `.git` file uses a relative gitdir and a
+submodule are refused, because git cannot resolve their repository from inside the container; run `aos` from
+the main checkout or the superproject instead. Any other `.git` file, such as one made by `--separate-git-dir`,
+is refused too, since the sandbox would have to mount a directory above the git directory.
 
 The container path is `/home/agent/projects/<name>-<hash>`, where `<name>` is the folder's basename and
 `<hash>` is the first 8 hex characters of the SHA-256 of its real host path. It is stable for a folder, and

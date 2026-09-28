@@ -101,7 +101,18 @@ describe("locateProject", () => {
     writeFileSync(join(worktree, ".git"), "gitdir: ../with-relative-worktree/.git/worktrees/with-relative-worktree-feat\n");
     assert.throws(
       () => locateProject(worktree),
-      (error) => error instanceof AosError && /linked git worktree .* relative gitdir/.test(error.message),
+      (error) => error instanceof AosError && /relative gitdir/.test(error.message),
+    );
+  });
+
+  test("refuses a repository whose .git file comes from --separate-git-dir", () => {
+    const dir = join(home, "Projects", "separate");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(join(home, "gitdirs"), { recursive: true });
+    execFileSync("git", ["init", "--quiet", "--separate-git-dir", join(home, "gitdirs", "separate.git"), dir]);
+    assert.throws(
+      () => locateProject(dir),
+      (error) => error instanceof AosError && error.message.includes("is not a linked worktree"),
     );
   });
 

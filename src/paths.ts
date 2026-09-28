@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AosError } from "./errors.ts";
 
 export interface AosPaths {
@@ -64,7 +64,9 @@ export function locateProject(cwd: string): ProjectLocation {
 
 /**
  * Sandcastle mounts `root/.git` and, when that is a gitdir file, the directory two levels above the gitdir it
- * names, both at their host paths. That makes a linked worktree with an absolute gitdir work in the container.
+ * names, both at their host paths. For a linked worktree with an absolute gitdir that second mount is exactly the
+ * main repository's git directory; for any other gitdir file (such as `--separate-git-dir`) it can be an arbitrary
+ * ancestor like the home directory, so only linked worktrees are accepted.
  * A relative gitdir resolves against the container path of `root` instead, and a submodule's `core.worktree`
  * points git back at the host path of `root`, so git fails inside the container for both.
  */
@@ -80,11 +82,18 @@ function assertGitMetadataMountable(root: string): void {
   const gitdir = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"))?.[1]?.trim() ?? "";
   if (!isAbsolute(gitdir)) {
     throw new AosError(
-      `${root} is a linked git worktree whose .git file uses a relative gitdir path, which does not resolve inside the container. Run aos from the main checkout, or run "git worktree repair" with worktree.useRelativePaths unset.`,
+      `${root} has a .git file with a relative gitdir path, which does not resolve inside the container. Run aos from the main checkout, or run "git worktree repair" with worktree.useRelativePaths unset.`,
     );
   }
   if (gitdir.includes(":") || gitdir.includes(",")) {
     throw new AosError(`Git directory ${gitdir} contains ":" or ",", which Docker bind mounts cannot express.`);
+  }
+  const mounted = resolve(gitdir, "..", "..");
+  const commonDir = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  if (basename(dirname(gitdir)) !== "worktrees" || commonDir === "" || realpathSync(mounted) !== realpathSync(commonDir)) {
+    throw new AosError(
+      `${root} keeps its git directory at ${gitdir}, outside the project, and is not a linked worktree, so the sandbox would have to mount ${mounted}. Run aos from a checkout whose .git is a directory, or from a linked worktree.`,
+    );
   }
 }
 
