@@ -1,0 +1,30 @@
+{
+  "name": "agentic-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "aos: run coding agents interactively inside Sandcastle Docker sandboxes",
+  "type": "module",
+  "bin": {
+    "aos": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "docker"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.0",
+    "typescript": "7.0.2"
+  }
+}
