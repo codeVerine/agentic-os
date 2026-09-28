@@ -22,7 +22,7 @@ export interface LaunchOptions {
 
 export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[], options: LaunchOptions): Promise<number> {
   const { paths } = options;
-  const project = locateProject(options.cwd, paths.projects);
+  const project = locateProject(options.cwd);
   assertCommittedGitRepo(project);
   if (!existsSync(paths.secrets)) throw new AosError(`${paths.secrets} does not exist. Run "aos init" first.`);
   const ids = hostIds();
@@ -35,7 +35,7 @@ export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[],
   // Sandcastle bind-mounts every project at the same /home/agent/workspace.
   // Agents key transcripts, trust and memory by working directory, so the agent
   // runs from a second, per-project mount of the same host directory instead.
-  const sandboxProjectRoot = `${SANDBOX_PROJECTS_DIR}/${project.name}`;
+  const sandboxProjectRoot = `${SANDBOX_PROJECTS_DIR}/${project.sandboxName}`;
   spec.trustProject?.(agentDir, sandboxProjectRoot);
   const workdir = project.subdir ? `${sandboxProjectRoot}/${project.subdir}` : sandboxProjectRoot;
   const setup = spec.launchSetup ? `${spec.launchSetup} && ` : "";
@@ -79,11 +79,6 @@ export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[],
 }
 
 function assertCommittedGitRepo(project: ProjectLocation): void {
-  if (!existsSync(join(project.root, ".git"))) {
-    throw new AosError(
-      `Project ${project.name} is not a git repository. Sandcastle needs one: run "git init" in ${project.root} and make a first commit.`,
-    );
-  }
   const head = spawnSync("git", ["-C", project.root, "rev-parse", "--verify", "--quiet", "HEAD"], { encoding: "utf8" });
   if (head.status !== 0) {
     throw new AosError(`Project ${project.name} has no commits yet. Sandcastle needs one: make a first commit in ${project.root}.`);

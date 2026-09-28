@@ -35,7 +35,7 @@ cd agentic-os
 npm install            # also compiles TypeScript to dist/
 npm link               # puts `aos` on your PATH
 
-aos init               # creates ~/AgenticOS/{projects,secrets}; secrets/ is mode 0700
+aos init               # creates ~/AgenticOS/{secrets,projects}; secrets/ is mode 0700
 aos image build        # builds aos-dev:local with your Mac UID/GID (a few minutes the first time)
 aos doctor             # checks Docker, the image, and each agent's login and keys
 
@@ -44,16 +44,29 @@ aos secrets login claude
 aos secrets login opencode
 aos secrets login pi
 
-mkdir -p ~/AgenticOS/projects/demo && cd ~/AgenticOS/projects/demo
+mkdir -p ~/code/demo && cd ~/code/demo
 git init && git commit --allow-empty -m "Start demo"
 aos pi                 # Pi's own interface, running in Docker, on this project
 ```
 
 Set `AOS_ROOT` to use a directory other than `~/AgenticOS`.
 
-Run the launchers from anywhere inside `AOS_ROOT/projects/<project>`. The agent starts in the same
-subdirectory, at `/home/agent/projects/<project>/...` in the container. `aos` refuses to start anywhere else.
-Sandcastle needs each project to be a git repository with at least one commit.
+Run the launchers from any directory inside a git repository, wherever it lives; `AOS_ROOT/projects/` is
+only a convenient optional place for projects. The project is the git repository root of the directory you run
+`aos` in, and only that folder is mounted into the container. The agent starts in the same subdirectory you ran
+it from. The repository needs at least one commit (a Sandcastle requirement); a directory outside a git
+repository is refused and `aos` never runs `git init` for you.
+
+A linked worktree (`git worktree add`) works too: Sandcastle also mounts the main repository's `.git` at its
+host path so git inside the container can reach it. A worktree whose `.git` file uses a relative gitdir and a
+submodule are refused, because git cannot resolve their repository from inside the container; run `aos` from
+the main checkout or the superproject instead. Any other `.git` file, such as one made by `--separate-git-dir`,
+is refused too, since the sandbox would have to mount a directory above the git directory.
+
+The container path is `/home/agent/projects/<name>-<hash>`, where `<name>` is the folder's basename and
+`<hash>` is the first 8 hex characters of the SHA-256 of its real host path. It is stable for a folder, and
+`~/a/app` and `~/b/app` get different paths, so their Claude, Codex, OpenCode and Pi history and trust
+entries never collide. Paths containing `:` or `,` are refused, since Docker bind mounts cannot express them.
 
 Arguments after the agent name go to the agent CLI unchanged:
 
@@ -68,7 +81,7 @@ aos opencode --help
 
 | Command | What it does |
 | --- | --- |
-| `aos init` | Creates `AOS_ROOT` with `projects/`, `secrets/` (0700), `secrets/env` (0600) and one login directory per agent. Safe to re-run; it resets the secrets permissions. |
+| `aos init` | Creates `AOS_ROOT` with an optional `projects/`, `secrets/` (0700), `secrets/env` (0600) and one login directory per agent. Safe to re-run; it resets the secrets permissions. |
 | `aos doctor` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, and which agents have a saved login or keys. |
 | `aos image build [docker build args]` | Builds `aos-dev:local` from `docker/Dockerfile` with `AGENT_UID`/`AGENT_GID` set to your Mac user, and labels it with a hash of `docker/`. Launches, logins and `aos doctor` refuse an image whose label does not match the installed aos, so rebuild after upgrading aos. |
 | `aos secrets login <agent> [args]` | Runs the agent's own login flow in a throwaway `aos-dev` container that mounts only that agent's login directory. Extra arguments go to the agent's login command. |
@@ -171,7 +184,7 @@ it from the agent's own settings, its own command line, or its own interface.
 How the defaults are applied:
 
 - Codex's default lives in the image, so nothing in `secrets/codex/` is written for it. `aos codex` only adds
-  the `[projects."/home/agent/projects/<name>"] trust_level = "trusted"` entry that Codex itself writes when
+  the `[projects."/home/agent/projects/<name>-<hash>"] trust_level = "trusted"` entry that Codex itself writes when
   you accept its trust prompt, and leaves a `config.toml` that already mentions the project alone.
 - Claude Code, OpenCode and Pi have no config layer below the user's own file, so `aos` fills the keys above
   into that file at launch **only when they are absent**. Whatever you set stays, including a value that
