@@ -38,11 +38,14 @@ export function dockerEndpoint(): string {
 
 const CONTEXT_HASH_LABEL = "aos.context-hash";
 
-/** Hash of the files in the image build context, stamped on the image so a stale build is detected. */
+/**
+ * Hash of the files in the image build context, stamped on the image so a stale build is detected.
+ * Skips hidden files and editor backups, which docker/.dockerignore also keeps out of the build.
+ */
 export function contextHash(dir = DOCKER_CONTEXT_DIR): string {
   const hash = createHash("sha256");
   for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!entry.isFile()) continue;
+    if (!entry.isFile() || entry.name.startsWith(".") || entry.name.endsWith("~")) continue;
     hash.update(`${entry.name}\0`).update(readFileSync(join(dir, entry.name))).update("\0");
   }
   return hash.digest("hex");

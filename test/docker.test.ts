@@ -22,8 +22,22 @@ describe("contextHash", () => {
     const edited = context("edited", { Dockerfile: "FROM node", "codex-refresh.mjs": "two" });
     const added = context("added", { Dockerfile: "FROM node", "codex-refresh.mjs": "one", "extra.sh": "" });
     const renamed = context("renamed", { Dockerfile: "FROM node", "codex-refresh2.mjs": "one" });
+    const dockerfile = context("dockerfile", { Dockerfile: "FROM debian", "codex-refresh.mjs": "one" });
     assert.equal(contextHash(a), contextHash(b));
-    for (const other of [edited, added, renamed]) assert.notEqual(contextHash(other), contextHash(a));
+    for (const other of [edited, added, renamed, dockerfile]) assert.notEqual(contextHash(other), contextHash(a));
+  });
+
+  test("ignores hidden files and editor backups that the build context excludes", () => {
+    const clean = context("clean", { Dockerfile: "FROM node", "codex-refresh.mjs": "one" });
+    const cluttered = context("cluttered", {
+      Dockerfile: "FROM node",
+      "codex-refresh.mjs": "one",
+      ".DS_Store": "finder",
+      ".dockerignore": "**/.*",
+      "Dockerfile~": "backup",
+    });
+    mkdirSync(join(cluttered, ".git"));
+    assert.equal(contextHash(cluttered), contextHash(clean));
   });
 });
 
