@@ -16,7 +16,7 @@ export function runDoctor(paths: AosPaths): number {
     console.log(`${MARK[level]} ${label.padEnd(10)} ${detail}`);
   };
 
-  const rootOk = existsSync(paths.projects) && existsSync(paths.secrets);
+  const rootOk = existsSync(paths.secrets);
   report(rootOk ? "ok" : "fail", "root", rootOk ? paths.root : `${paths.root} is not initialised: run "aos init"`);
 
   if (existsSync(paths.secrets)) {

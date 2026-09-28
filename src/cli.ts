@@ -11,15 +11,16 @@ import { aosPaths, aosRoot } from "./paths.ts";
 
 const USAGE = `Usage: aos <command>
 
-  aos init                          Create AOS_ROOT (default ~/AgenticOS) with projects/ and secrets/
+  aos init                          Create AOS_ROOT (default ~/AgenticOS) with secrets/ and an optional projects/
   aos doctor                        Check Docker, the aos-dev image, and per-agent secrets
   aos image build [docker args]     Build the aos-dev:local image for this Mac user
   aos secrets login <agent> [args]  Run the agent's own login inside the container and keep it
   aos <agent> [args]                Open the agent's own interface for the current project
                                     (agents: ${AGENT_NAMES.join(", ")})
 
-Agents run inside a Sandcastle Docker sandbox. Run agent commands from inside
-AOS_ROOT/projects/<project>; arguments after the agent name go to the agent CLI.`;
+Agents run inside a Sandcastle Docker sandbox. Run agent commands from any git
+project directory (not your home directory or a parent of it); arguments after
+the agent name go to the agent CLI.`;
 
 async function main(argv: readonly string[]): Promise<number> {
   const hostEnv = { ...process.env };
