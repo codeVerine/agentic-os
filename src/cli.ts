@@ -19,9 +19,8 @@ const USAGE = `Usage: aos <command>
                                     (agents: ${AGENT_NAMES.join(", ")})
 
 Agents run inside a Sandcastle Docker sandbox. Run agent commands from any
-directory inside a git repository with at least one commit. aos asks once
-before it mounts a repository root it has not seen; arguments after the agent
-name go to the agent CLI.`;
+directory inside a git repository with at least one commit; arguments after
+the agent name go to the agent CLI.`;
 
 async function main(argv: readonly string[]): Promise<number> {
   const hostEnv = { ...process.env };

@@ -11,8 +11,6 @@ export interface AosPaths {
   readonly secrets: string;
   readonly secretsEnv: string;
   readonly sessions: string;
-  /** One approved project root per line. Lives outside every project and is never mounted into a container. */
-  readonly approvedFolders: string;
   /** Per-launch runtime directories, removed when the launch ends. */
   readonly run: string;
 }
@@ -44,7 +42,6 @@ export function aosPaths(root: string): AosPaths {
     secrets,
     secretsEnv: join(secrets, "env"),
     sessions: join(root, "state", "sessions"),
-    approvedFolders: join(root, "state", "approved-folders"),
     run: join(root, "state", "run"),
   };
 }
