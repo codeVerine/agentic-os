@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { interactive } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { type AgentSpec, interactiveProvider } from "./agents.ts";
+import { applyDefaults } from "./defaults.ts";
 import { assertImageMatchesHost, hostIds, IMAGE } from "./docker.ts";
 import { AosError } from "./errors.ts";
 import { terminalEnv } from "./hostenv.ts";
@@ -28,12 +29,14 @@ export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[],
   assertImageMatchesHost(ids);
 
   const agentDir = ensureAgentStateDirs(paths.secrets, spec);
+  for (const defaults of spec.autonomyDefaults) applyDefaults(agentDir, defaults);
   const secrets = readSecretsEnv(paths.secretsEnv);
 
   // Sandcastle bind-mounts every project at the same /home/agent/workspace.
   // Agents key transcripts, trust and memory by working directory, so the agent
   // runs from a second, per-project mount of the same host directory instead.
   const sandboxProjectRoot = `${SANDBOX_PROJECTS_DIR}/${project.name}`;
+  spec.trustProject?.(agentDir, sandboxProjectRoot);
   const workdir = project.subdir ? `${sandboxProjectRoot}/${project.subdir}` : sandboxProjectRoot;
   const setup = spec.launchSetup ? `${spec.launchSetup} && ` : "";
   const argv = ["sh", "-c", `cd "$1" && shift && ${setup}exec "$@"`, "aos", workdir, spec.command, ...agentArgs];

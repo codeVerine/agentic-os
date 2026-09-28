@@ -155,12 +155,37 @@ where it persists for every project:
   `{"provider": {"myrouter": {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": "https://router.example/v1", "apiKey": "{env:MY_ROUTER_API_KEY}"}, "models": {"model-id": {}}}}}`
 - Codex: a `model_providers` entry with `env_key` in `secrets/codex/config.toml`.
 
-## Codex permissions in the container
+## Permissions in the container: everything allowed by default
 
-Codex normally wraps each command in its own bubblewrap sandbox. Bubblewrap cannot create namespaces inside
-a Docker container, so every command would fail. The image therefore sets `sandbox_mode =
-"danger-full-access"` in `/etc/codex/config.toml`: the container is the sandbox, and Codex still asks for
-approval as usual. Your own `secrets/codex/config.toml`, `-s`/`--sandbox` and `/permissions` override it.
+The container is the sandbox, so every agent starts in full-autonomy mode: no permission prompts, no approval
+requests, no inner sandbox, and no "do you trust this folder?" question for a new project. You change any of
+it from the agent's own settings, its own command line, or its own interface.
+
+| Agent | Default | Where it is set | Turn prompts back on |
+| --- | --- | --- | --- |
+| Claude Code | bypass-permissions mode | `permissions.defaultMode` and `skipDangerousModePermissionPrompt` in `secrets/claude/settings.json` | Set `"permissions": {"defaultMode": "default"}` (or `"acceptEdits"`, `"plan"`) in that file. One launch: `aos claude --permission-mode default`. In a session: Shift+Tab cycles the mode and `/permissions` edits the rules. |
+| Codex | `approval_policy = "never"`, `sandbox_mode = "danger-full-access"` (its header shows "permissions: YOLO mode") | `/etc/codex/config.toml` in the image, Codex's lowest config layer | Put `approval_policy = "on-request"` and `sandbox_mode = "workspace-write"` at the top of `secrets/codex/config.toml`. One launch: `aos codex -a on-request -s workspace-write`. In a session: `/permissions`. |
+| OpenCode | `"permission": {"*": "allow"}` | `secrets/opencode/config/config.json`, the lowest file of OpenCode's global config | Put your own `permission` in `secrets/opencode/config/opencode.json` (or `opencode.jsonc`), which overrides `config.json`, for example `{"permission": {"bash": "ask", "edit": "ask"}}`. A project's own `opencode.json` overrides both. |
+| Pi | Pi never asks before running a tool; `defaultProjectTrust: "always"` also loads a project's `.pi/` settings, extensions and skills without asking | `secrets/pi/settings.json` | Set `"defaultProjectTrust": "ask"`. In a session: `/trust`. |
+
+How the defaults are applied:
+
+- Codex's default lives in the image, so nothing in `secrets/codex/` is written for it. `aos codex` only adds
+  the `[projects."/home/agent/projects/<name>"] trust_level = "trusted"` entry that Codex itself writes when
+  you accept its trust prompt, and leaves a `config.toml` that already mentions the project alone.
+- Claude Code, OpenCode and Pi have no config layer below the user's own file, so `aos` fills the keys above
+  into that file at launch **only when they are absent**. Whatever you set stays, including a value that
+  turns the default off. Removing a key brings the default back. A file that is not valid JSON stops the
+  launch with an error instead of being rewritten.
+- Claude Code's trust prompt has no setting, so `aos claude` sets `CLAUDE_CODE_SANDBOXED=1`, which Claude
+  Code treats as "this workspace is already sandboxed".
+- Changes to these files apply from the next launch. A project's own `.claude/settings.json` or
+  `opencode.json` still overrides the user-level defaults, as it does on the Mac.
+- Codex's own sandbox (bubblewrap) cannot create namespaces inside Docker. Turning `sandbox_mode` back on
+  makes its sandboxed commands fail, and the model then has to ask you to approve running them outside it.
+
+Full autonomy does not make the container harmless: an agent can still use the network, its own login and the
+API keys passed to it, and write anything in the project. See "Deliberately skipped for now".
 
 ## Warning: host git in agent-written projects
 

@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import { claudeCode, codex, opencode, pi, type AgentProvider } from "@ai-hero/sandcastle";
+import type { DefaultsFile } from "./defaults.ts";
 import { AosError } from "./errors.ts";
+import { trustCodexProject } from "./trust.ts";
 
 export const AGENT_NAMES = ["claude", "codex", "opencode", "pi"] as const;
 export type AgentName = (typeof AGENT_NAMES)[number];
@@ -30,6 +32,15 @@ export interface AgentSpec {
   readonly launchSetup?: string;
   /** Environment for `aos <agent>` launches only, on top of configEnv. */
   readonly launchEnv: Readonly<Record<string, string>>;
+  /** Marks the project trusted in the agent's state, given the project root in the container. */
+  readonly trustProject?: (agentDir: string, sandboxProjectRoot: string) => void;
+  /**
+   * Full-autonomy defaults for agents whose config has no lower layer than the
+   * user's own file: aos fills these keys into that file when they are absent, and
+   * never changes a key the user set. Codex needs none, its defaults live in the
+   * image's /etc/codex/config.toml, below the user's config.toml.
+   */
+  readonly autonomyDefaults: readonly DefaultsFile[];
   /** Keys from the shared secrets env file this agent can use. */
   readonly envKeys: readonly string[];
   /** Files under secrets/<agent>/ that exist once the agent's own login has completed. */
@@ -69,7 +80,16 @@ export const AGENTS: Readonly<Record<AgentName, AgentSpec>> = {
     launchScopedDirs: [],
     // Without CLAUDE_CONFIG_DIR, Claude Code keeps .claude.json in $HOME, outside the mount.
     configEnv: { CLAUDE_CONFIG_DIR: `${SANDBOX_HOME}/.claude` },
-    launchEnv: {},
+    // Claude Code asks "Do you trust this folder?" for every new project directory. This
+    // variable, which Claude Code sets for its own sandboxed runners, marks the workspace
+    // trusted. The image and every project mount are already the sandbox.
+    launchEnv: { CLAUDE_CODE_SANDBOXED: "1" },
+    autonomyDefaults: [
+      {
+        file: "settings.json",
+        values: { permissions: { defaultMode: "bypassPermissions" }, skipDangerousModePermissionPrompt: true },
+      },
+    ],
     envKeys: [...ANTHROPIC_KEYS, "CLAUDE_CODE_OAUTH_TOKEN"],
     loginFiles: [".credentials.json"],
     loginCommand: ["auth", "login"],
@@ -88,6 +108,8 @@ export const AGENTS: Readonly<Record<AgentName, AgentSpec>> = {
     // this local server serializes refreshes across containers (docker/codex-refresh.mjs).
     launchSetup: "node /usr/local/lib/aos/codex-refresh.mjs",
     launchEnv: { CODEX_REFRESH_TOKEN_URL_OVERRIDE: "http://127.0.0.1:48123/oauth/token" },
+    trustProject: trustCodexProject,
+    autonomyDefaults: [],
     envKeys: [...OPENAI_KEYS, "CODEX_API_KEY", "OPENROUTER_API_KEY"],
     loginFiles: ["auth.json"],
     loginCommand: ["login"],
@@ -106,6 +128,9 @@ export const AGENTS: Readonly<Record<AgentName, AgentSpec>> = {
     launchScopedDirs: [],
     configEnv: {},
     launchEnv: {},
+    // OpenCode merges config.json, then opencode.json, then opencode.jsonc from its config
+    // directory, later files winning. aos owns config.json, so the user's own opencode.json(c) overrides it.
+    autonomyDefaults: [{ file: "config/config.json", values: { permission: { "*": "allow" } } }],
     envKeys: [...ANTHROPIC_KEYS, ...OPENAI_KEYS, ...ROUTER_KEYS, ...OTHER_PROVIDER_KEYS],
     loginFiles: ["data/auth.json"],
     loginCommand: ["auth", "login"],
@@ -119,6 +144,9 @@ export const AGENTS: Readonly<Record<AgentName, AgentSpec>> = {
     launchScopedDirs: [],
     configEnv: { PI_CODING_AGENT_DIR: `${SANDBOX_HOME}/.pi/agent` },
     launchEnv: {},
+    // Pi runs tools without asking. Its one prompt is "Trust project folder?", shown when a
+    // project has .pi settings, extensions or skills; "always" loads them without asking.
+    autonomyDefaults: [{ file: "settings.json", values: { defaultProjectTrust: "always" } }],
     envKeys: [...ANTHROPIC_KEYS, "ANTHROPIC_OAUTH_TOKEN", ...OPENAI_KEYS, ...ROUTER_KEYS, ...OTHER_PROVIDER_KEYS],
     loginFiles: ["auth.json"],
     loginCommand: [],

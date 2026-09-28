@@ -36,12 +36,15 @@ RUN npm install -g \
     @earendil-works/pi-coding-agent@0.87.1 \
   && npm cache clean --force
 
-# Codex's own bubblewrap sandbox cannot create namespaces inside Docker, so
-# every command it ran would fail. The container is the sandbox; approvals stay
-# on. The system config layer keeps ~/.codex/config.toml, -s and /permissions
-# able to override this default.
+# Agents run with full autonomy by default: no approval prompts, no inner sandbox.
+# The container is the sandbox. Codex's own bubblewrap sandbox could not create
+# namespaces inside Docker anyway, so every command it ran would fail.
+# /etc/codex/config.toml is Codex's lowest config layer: the user's
+# ~/.codex/config.toml, -a, -s and /permissions override it. The other agents
+# have no such layer, so aos fills their defaults into their own user config
+# (secrets/<agent>/) at launch, see src/agents.ts.
 RUN mkdir -p /etc/codex \
-  && printf 'sandbox_mode = "danger-full-access"\n' > /etc/codex/config.toml
+  && printf 'approval_policy = "never"\nsandbox_mode = "danger-full-access"\n' > /etc/codex/config.toml
 
 COPY codex-refresh.mjs /usr/local/lib/aos/codex-refresh.mjs
 

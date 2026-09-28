@@ -51,7 +51,8 @@ uid=501(agent) gid=20(dialout) groups=20(dialout)
 The image user is `501:20`, the Mac user's UID and GID, which Sandcastle's pre-flight check requires.
 
 This build predates the `COPY codex-refresh.mjs` step and the `aos.context-hash` label that `aos image build`
-now adds; neither has been re-recorded here.
+now adds, and its `/etc/codex/config.toml` step is the one the full-autonomy change replaced (see "Full-autonomy
+defaults" below); none of these has been re-recorded here.
 
 ## `aos init` and `aos doctor`
 
@@ -137,7 +138,7 @@ project:
 
 /status in demo-b:
 │  Directory:            ~/projects/demo-b                                   │
-│  Permissions:          Custom (danger-full-access, Ask for approval)       │
+│  Permissions:          Custom (danger-full-access, Ask for approval)       │   (before the full-autonomy change)
 │  Account:              API key configured (run codex login to use ChatGPT) │
 ```
 
@@ -286,6 +287,139 @@ a reuse (which would make the OpenCode ChatGPT case log out every session).
 - The Mac's own agent homes gained no transcripts with container paths: `~/.codex/sessions`, `~/.pi` and
   `~/.local/share/opencode` had no files mentioning `/home/agent/projects`, and `~/.claude/projects` had no
   `-home-agent-*` directory.
+
+## Full-autonomy defaults
+
+Recorded on 2026-09-28 with the same lab setup as above, on a rebuilt `aos-dev:local` (the image's
+`/etc/codex/config.toml` now holds `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`, and the
+container user is still `uid=501(agent) gid=20(dialout)`, not root). Projects `demo-e` to `demo-h` were new, so
+none had a saved trust decision.
+
+How the tool-call checks below were made: no real model credentials were available, so each agent was pointed
+at a small local fake model server on the Mac (`host.docker.internal`, Docker Desktop's name for the Mac). The
+fake answers the agent's first prompt, `run marker`, with one shell tool call, `echo aos-ran > marker.txt`. The
+agent's own permission system then decides between running it and asking. The fake servers are throwaway
+scripts, not part of the repository. Screens are the terminal's final state, trimmed.
+
+### Every agent starts without a prompt
+
+Claude Code (`aos claude` in a new project, from `demo-h/x`), whose `secrets/claude/settings.json` held only
+`{"theme": "dark"}` beforehand. aos added the two keys, the trust dialog and the "Bypass Permissions mode"
+warning did not appear, and the tool call ran:
+
+```text
+$ cat secrets/claude/settings.json
+{ "theme": "dark", "permissions": { "defaultMode": "bypassPermissions" }, "skipDangerousModePermissionPrompt": true }
+ ▐▛███▛█   Claude Code v2.1.283
+ ▝▝   ▝▝   ~/projects/demo-h/x
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+❯ run marker
+● Bash(echo aos-ran > marker.txt)
+  ⎿  Created marker.txt (+1 -0)
+● Marker step finished.
+```
+
+The brief expected Claude Code to refuse the bypass mode as root unless `IS_SANDBOX=1`. That never came up: the
+container user is uid 501, not root, and both `--dangerously-skip-permissions` and `permissions.defaultMode`
+worked as that user without `IS_SANDBOX`.
+Without `CLAUDE_CODE_SANDBOXED=1` the same launch stopped at "Accessing workspace: ... Yes, I trust this
+folder", and without `skipDangerousModePermissionPrompt` at "WARNING: Claude Code running in Bypass
+Permissions mode ... Yes, I accept".
+
+Codex (`aos codex` from `demo-g/deep/er`, a subdirectory of a new project). Before aos wrote the trust entry,
+even `-a never -s danger-full-access` stopped at "Trust this folder?", and a `-c projects...` override did not
+skip it from a subdirectory. Now `secrets/codex/config.toml` gains
+`[projects."/home/agent/projects/demo-g"] trust_level = "trusted"` and Codex opens directly. From `demo-h`, the
+tool call ran with no approval:
+
+```text
+  >_ OpenAI Codex (v0.158.0)
+     ~/projects/demo-h
+  permissions: YOLO mode
+› run marker
+• Ran echo aos-ran > marker.txt
+  └ (no output)
+• Marker step finished.
+```
+
+OpenCode (`aos opencode -m openai/gpt-5`), with `secrets/opencode/config/config.json` created by aos as
+`{"$schema": "https://opencode.ai/config.json", "permission": {"*": "allow"}}` (OpenCode added the schema line).
+The command below reads outside the project (`/etc/hostname`) and writes outside it
+(`/home/agent/outside.txt`), which stock OpenCode asks about, and ran unasked:
+
+```text
+  ┃  run marker
+  ┃  $ cat /etc/hostname > /home/agent/outside.txt; cat /etc/hostname
+  ┃  cba5794da84e
+     Marker step finished.
+     ▣  Build · GPT-5 · 1.1s
+```
+
+Pi (`aos pi --model fake/fake-model`, a custom provider in `secrets/pi/models.json`) ran its bash tool with
+no prompt, which matches its documentation ("it does not ask for approval before every tool call"). Its one
+prompt is project trust. `demo-e` holds a `.pi/settings.json`, and before the change `aos pi` there stopped at:
+
+```text
+ Trust project folder?
+ /home/agent/projects/demo-e
+ → Trust
+   Trust parent folder (/home/agent/projects)
+   Trust (this session only)
+   Do not trust
+   Do not trust (this session only)
+```
+
+`aos` now adds `"defaultProjectTrust": "always"` to `secrets/pi/settings.json`, and the same project opens on
+Pi's normal screen (`pi v0.87.1`, `~/projects/demo-e (main)`).
+
+### Overrides turn the prompts back on
+
+Each override below was made with the agent's own setting or flag, with the same `run marker` call. In every
+case the command waited for an answer instead of running.
+
+- Claude Code, `"permissions": {"defaultMode": "default"}` in `secrets/claude/settings.json` (aos left the
+  value alone on the next launch), and separately `aos claude --permission-mode default` with the bypass
+  default in the file:
+
+  ```text
+   Bash command
+     echo aos-ran > marker.txt
+   Do you want to proceed?
+   ❯ 1. Yes
+     2. Yes, and always allow access to /home/agent/projects/demo-h from this project
+     3. Yes, and switch to auto mode · auto mode handles these prompts for you
+     4. No
+  ```
+
+- Codex, `approval_policy = "on-request"` and `sandbox_mode = "workspace-write"` at the top of
+  `secrets/codex/config.toml`, and separately `aos codex -a on-request -s workspace-write`. Its sandbox cannot
+  work in Docker, so a command Codex runs inside it fails
+  (`bwrap: No permissions to create new namespace`); a command the model asks to run outside it prompts:
+
+  ```text
+  • Running echo aos-ran > marker.txt
+    Would you like to run the following command?
+    Reason: write the marker
+  › 1. Yes, proceed (y)
+    2. Yes, and don't ask again for commands that start with `echo aos-ran > marker.txt` (p)
+    3. No, and tell Codex what to do differently (esc)
+  ```
+
+  Codex 0.158 no longer accepts `approval_policy = "untrusted"` ("is no longer supported"); `on-request` and
+  `never` are its only values.
+
+- OpenCode, `{"permission": {"bash": "ask"}}` in `secrets/opencode/config/opencode.json`, which overrides the
+  aos-owned `config.json` (`opencode debug agent build` lists both rules, with `bash: ask` last):
+
+  ```text
+  ┃  △ Permission required
+  ┃    # Shell command
+  ┃  $ cat /etc/hostname > /home/agent/outside.txt; cat /etc/hostname
+  ┃   Allow once   Allow always   Reject
+  ```
+
+Not exercised: Pi's `defaultProjectTrust: "ask"` override was not run, and no real model was involved for any
+agent, so a real model's own refusals or extra approval requests are not covered.
 
 ## Refusals
 
