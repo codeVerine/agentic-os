@@ -76,4 +76,40 @@ describe("locateProject", () => {
     assert.match(sandboxName(".hidden dir", "/x/.hidden dir"), /^hidden-dir-[0-9a-f]{8}$/);
     assert.match(sandboxName("...", "/x/..."), /^project-[0-9a-f]{8}$/);
   });
+
+  test("leaves externalGitDir unset for an ordinary repository", () => {
+    const dir = repo("Projects", "ordinary");
+    assert.equal(locateProject(dir).externalGitDir, undefined);
+  });
+
+  test("flags the main repository's .git as external for a worktree checkout", () => {
+    const main = repo("Projects", "with-worktree");
+    execFileSync("git", ["-C", main, "commit", "--allow-empty", "--quiet", "-m", "init"]);
+    const worktree = join(home, "Projects", "with-worktree-feat");
+    execFileSync("git", ["-C", main, "worktree", "add", "--quiet", worktree]);
+    const project = locateProject(worktree);
+    assert.equal(project.root, realpathSync(worktree));
+    assert.equal(project.externalGitDir, realpathSync(join(main, ".git")));
+  });
+
+  test("flags the superproject's .git/modules entry as external for a submodule checkout", () => {
+    const sub = repo("Projects", "sub-standalone");
+    execFileSync("git", ["-C", sub, "commit", "--allow-empty", "--quiet", "-m", "init"]);
+    const super_ = repo("Projects", "super");
+    execFileSync("git", ["-C", super_, "commit", "--allow-empty", "--quiet", "-m", "init"]);
+    execFileSync("git", [
+      "-C",
+      super_,
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "--quiet",
+      "add",
+      sub,
+      "sub",
+    ]);
+    const project = locateProject(join(super_, "sub"));
+    assert.equal(project.root, realpathSync(join(super_, "sub")));
+    assert.equal(project.externalGitDir, realpathSync(join(super_, ".git", "modules", "sub")));
+  });
 });

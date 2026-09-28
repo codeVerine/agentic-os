@@ -23,6 +23,12 @@ export interface ProjectLocation {
   readonly root: string;
   /** Path of the working directory relative to the project root, POSIX separators, "" at the root. */
   readonly subdir: string;
+  /**
+   * Real path of the actual git directory when it lives outside `root`, as it does for a git
+   * worktree (`<main>/.git/worktrees/<n>`) or a submodule (`<super>/.git/modules/<x>`).
+   * `undefined` when `root/.git` already holds the git directory itself.
+   */
+  readonly externalGitDir: string | undefined;
 }
 
 export function aosRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -53,7 +59,38 @@ export function locateProject(cwd: string): ProjectLocation {
     throw new AosError(`Project path ${root} contains ":" or ",", which Docker bind mounts cannot express.`);
   }
   const name = basename(root);
-  return { name, sandboxName: sandboxName(name, root), root, subdir: relative(root, here).split(sep).join("/") };
+  const externalGitDir = findExternalGitDir(root);
+  return {
+    name,
+    sandboxName: sandboxName(name, root),
+    root,
+    subdir: relative(root, here).split(sep).join("/"),
+    externalGitDir,
+  };
+}
+
+/**
+ * Resolves the real git directory for `root` and returns it when it lives outside `root`,
+ * as for a git worktree or a submodule, where `root/.git` is a file pointing elsewhere.
+ * Sandcastle mounts only `root`, so that external directory needs its own mount too, or
+ * every `git` command inside the container fails with "not a git repository".
+ */
+function findExternalGitDir(root: string): string | undefined {
+  // The common dir (not the per-worktree git-dir) is what needs mounting: for a worktree it's
+  // the main repository's .git, which already contains the worktree's own gitdir underneath it
+  // (.git/worktrees/<n>) plus everything that dir's "commondir" file points back to.
+  const result = spawnSync("git", ["-C", root, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
+  const output = result.status === 0 ? result.stdout.trim() : "";
+  if (output === "") return undefined;
+  const gitDir = isAbsolute(output) ? output : join(root, output);
+  const real = realpathOrThrow(gitDir, `Git directory ${gitDir} does not exist.`);
+  return isInside(root, real) ? undefined : real;
+}
+
+function isInside(root: string, target: string): boolean {
+  if (target === root) return true;
+  const rel = relative(root, target);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 /**
