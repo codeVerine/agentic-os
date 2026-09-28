@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_NAMES, AGENTS } from "./agents.ts";
-import { dockerEndpoint, dockerServerVersion, hostIds, IMAGE, imageUser } from "./docker.ts";
+import { contextHash, dockerEndpoint, dockerServerVersion, hostIds, IMAGE, imageConfig, imageProblem } from "./docker.ts";
 import { AosError } from "./errors.ts";
 import type { AosPaths } from "./paths.ts";
 import { EMPTY_SECRETS, missingLoginFiles, readSecretsEnv, type SecretsEnv, selectAgentEnv, unroutedKeys } from "./secrets.ts";
@@ -51,11 +51,9 @@ export function runDoctor(paths: AosPaths): number {
   );
 
   if (docker.version) {
-    const ids = hostIds();
-    const user = imageUser();
-    if (user === undefined) report("fail", "image", `${IMAGE} is not built: run "aos image build"`);
-    else if (user !== `${ids.uid}:${ids.gid}`) report("fail", "image", `${IMAGE} runs as ${user || "root"}, expected ${ids.uid}:${ids.gid}: run "aos image build"`);
-    else report("ok", "image", `${IMAGE} (user ${user})`);
+    const config = imageConfig();
+    const problem = imageProblem(config, hostIds(), contextHash());
+    report(problem ? "fail" : "ok", "image", problem ?? `${IMAGE} (user ${config?.User})`);
   }
 
   for (const name of AGENT_NAMES) {

@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AosError } from "./errors.ts";
 
@@ -33,20 +36,50 @@ export function dockerEndpoint(): string {
   return result.ok ? `context ${result.stdout}` : "default endpoint";
 }
 
-/** The image's configured user ("uid:gid"), or undefined when the image is not built. */
-export function imageUser(image = IMAGE): string | undefined {
-  const result = docker(["image", "inspect", image, "--format", "{{.Config.User}}"]);
-  return result.ok ? result.stdout : undefined;
+const CONTEXT_HASH_LABEL = "aos.context-hash";
+
+/** Hash of the files in the image build context, stamped on the image so a stale build is detected. */
+export function contextHash(dir = DOCKER_CONTEXT_DIR): string {
+  const hash = createHash("sha256");
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isFile()) continue;
+    hash.update(`${entry.name}\0`).update(readFileSync(join(dir, entry.name))).update("\0");
+  }
+  return hash.digest("hex");
+}
+
+export interface ImageConfig {
+  readonly User?: string;
+  readonly Labels?: Readonly<Record<string, string>> | null;
+}
+
+/** The image's configuration, or undefined when the image is not built. */
+export function imageConfig(image = IMAGE): ImageConfig | undefined {
+  const result = docker(["image", "inspect", image, "--format", "{{json .Config}}"]);
+  return result.ok ? (JSON.parse(result.stdout) as ImageConfig) : undefined;
+}
+
+/** Why the image cannot be used, with the fix, or undefined when it matches this host and aos version. */
+export function imageProblem(
+  config: ImageConfig | undefined,
+  ids: HostIds,
+  expectedHash: string,
+  image = IMAGE,
+): string | undefined {
+  if (config === undefined) return `Image ${image} is not built. Run "aos image build" first.`;
+  const user = config.User ?? "";
+  if (user !== `${ids.uid}:${ids.gid}`) {
+    return `Image ${image} runs as ${user || "root"}, but this Mac user is ${ids.uid}:${ids.gid}. Run "aos image build" again.`;
+  }
+  if (config.Labels?.[CONTEXT_HASH_LABEL] !== expectedHash) {
+    return `Image ${image} was built from a different version of aos's docker/ directory. Run "aos image build" again.`;
+  }
+  return undefined;
 }
 
 export function assertImageMatchesHost(ids: HostIds, image = IMAGE): void {
-  const user = imageUser(image);
-  if (user === undefined) throw new AosError(`Image ${image} is not built. Run "aos image build" first.`);
-  if (user !== `${ids.uid}:${ids.gid}`) {
-    throw new AosError(
-      `Image ${image} runs as ${user || "root"}, but this Mac user is ${ids.uid}:${ids.gid}. Run "aos image build" again.`,
-    );
-  }
+  const problem = imageProblem(imageConfig(image), ids, contextHash(), image);
+  if (problem) throw new AosError(problem);
 }
 
 export function buildImage(ids: HostIds, extraArgs: readonly string[]): number {
@@ -58,6 +91,8 @@ export function buildImage(ids: HostIds, extraArgs: readonly string[]): number {
       `AGENT_UID=${ids.uid}`,
       "--build-arg",
       `AGENT_GID=${ids.gid}`,
+      "--label",
+      `${CONTEXT_HASH_LABEL}=${contextHash()}`,
       "-t",
       IMAGE,
       ...extraArgs,

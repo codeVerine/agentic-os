@@ -69,8 +69,8 @@ aos opencode --help
 | Command | What it does |
 | --- | --- |
 | `aos init` | Creates `AOS_ROOT` with `projects/`, `secrets/` (0700), `secrets/env` (0600) and one login directory per agent. Safe to re-run; it resets the secrets permissions. |
-| `aos doctor` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists and matches your UID/GID, that `secrets/env` parses, and which agents have a saved login or keys. |
-| `aos image build [docker build args]` | Builds `aos-dev:local` from `docker/Dockerfile` with `AGENT_UID`/`AGENT_GID` set to your Mac user. Rebuild after upgrading the pinned agent versions. |
+| `aos doctor` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, and which agents have a saved login or keys. |
+| `aos image build [docker build args]` | Builds `aos-dev:local` from `docker/Dockerfile` with `AGENT_UID`/`AGENT_GID` set to your Mac user, and labels it with a hash of `docker/`. Launches, logins and `aos doctor` refuse an image whose label does not match the installed aos, so rebuild after upgrading aos. |
 | `aos secrets login <agent> [args]` | Runs the agent's own login flow in a throwaway `aos-dev` container that mounts only that agent's login directory. Extra arguments go to the agent's login command. |
 | `aos claude` / `aos codex` / `aos opencode` / `aos pi` `[args]` | Opens the agent's interactive interface for the current project. |
 
