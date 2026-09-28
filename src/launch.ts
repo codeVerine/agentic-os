@@ -55,10 +55,6 @@ export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[],
     containerGid: ids.gid,
     mounts: [
       { hostPath: project.root, sandboxPath: sandboxProjectRoot },
-      // A worktree's or submodule's real git directory lives outside project.root (its .git
-      // file just points there); mount it at the identical host path so the absolute paths
-      // git already wrote into that .git file keep resolving inside the container.
-      ...(project.externalGitDir ? [{ hostPath: project.externalGitDir, sandboxPath: project.externalGitDir }] : []),
       ...spec.stateMounts.map((mount) => ({
         hostPath: mount.subdir ? join(agentDir, mount.subdir) : agentDir,
         sandboxPath: mount.sandboxPath,

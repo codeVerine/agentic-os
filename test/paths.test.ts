@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -77,39 +77,44 @@ describe("locateProject", () => {
     assert.match(sandboxName("...", "/x/..."), /^project-[0-9a-f]{8}$/);
   });
 
-  test("leaves externalGitDir unset for an ordinary repository", () => {
-    const dir = repo("Projects", "ordinary");
-    assert.equal(locateProject(dir).externalGitDir, undefined);
-  });
+  function committedRepo(...parts: string[]): string {
+    const dir = repo(...parts);
+    execFileSync("git", ["-C", dir, "commit", "--allow-empty", "--quiet", "-m", "init"]);
+    return dir;
+  }
 
-  test("flags the main repository's .git as external for a worktree checkout", () => {
-    const main = repo("Projects", "with-worktree");
-    execFileSync("git", ["-C", main, "commit", "--allow-empty", "--quiet", "-m", "init"]);
+  test("resolves a linked worktree with an absolute gitdir to the worktree root and keeps the subdirectory", () => {
+    const main = committedRepo("Projects", "with-worktree");
     const worktree = join(home, "Projects", "with-worktree-feat");
     execFileSync("git", ["-C", main, "worktree", "add", "--quiet", worktree]);
-    const project = locateProject(worktree);
+    mkdirSync(join(worktree, "src", "lib"), { recursive: true });
+    const project = locateProject(join(worktree, "src", "lib"));
     assert.equal(project.root, realpathSync(worktree));
-    assert.equal(project.externalGitDir, realpathSync(join(main, ".git")));
+    assert.equal(project.subdir, "src/lib");
+    assert.equal(project.name, "with-worktree-feat");
   });
 
-  test("flags the superproject's .git/modules entry as external for a submodule checkout", () => {
-    const sub = repo("Projects", "sub-standalone");
-    execFileSync("git", ["-C", sub, "commit", "--allow-empty", "--quiet", "-m", "init"]);
-    const super_ = repo("Projects", "super");
-    execFileSync("git", ["-C", super_, "commit", "--allow-empty", "--quiet", "-m", "init"]);
-    execFileSync("git", [
-      "-C",
-      super_,
-      "-c",
-      "protocol.file.allow=always",
-      "submodule",
-      "--quiet",
-      "add",
-      sub,
-      "sub",
-    ]);
-    const project = locateProject(join(super_, "sub"));
-    assert.equal(project.root, realpathSync(join(super_, "sub")));
-    assert.equal(project.externalGitDir, realpathSync(join(super_, ".git", "modules", "sub")));
+  test("refuses a linked worktree whose .git file uses a relative gitdir", () => {
+    const main = committedRepo("Projects", "with-relative-worktree");
+    const worktree = join(home, "Projects", "with-relative-worktree-feat");
+    execFileSync("git", ["-C", main, "worktree", "add", "--quiet", worktree]);
+    writeFileSync(join(worktree, ".git"), "gitdir: ../with-relative-worktree/.git/worktrees/with-relative-worktree-feat\n");
+    assert.throws(
+      () => locateProject(worktree),
+      (error) => error instanceof AosError && /linked git worktree .* relative gitdir/.test(error.message),
+    );
+  });
+
+  test("refuses a submodule, pointing at the superproject", () => {
+    const sub = committedRepo("Projects", "sub-standalone");
+    const super_ = committedRepo("Projects", "super");
+    execFileSync("git", ["-C", super_, "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", sub, "sub"]);
+    mkdirSync(join(super_, "sub", "src"));
+    for (const dir of [join(super_, "sub"), join(super_, "sub", "src")]) {
+      assert.throws(
+        () => locateProject(dir),
+        (error) => error instanceof AosError && error.message.includes("git submodule") && error.message.includes(super_),
+      );
+    }
   });
 });
