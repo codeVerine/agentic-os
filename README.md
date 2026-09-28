@@ -46,24 +46,29 @@ aos secrets login pi
 
 mkdir -p ~/code/demo && cd ~/code/demo
 git init && git commit --allow-empty -m "Start demo"
-aos pi                 # Pi's own interface, running in Docker, on this project
+aos pi                 # asks to approve ~/code/demo once, then runs Pi in Docker on it
 ```
 
 Set `AOS_ROOT` to use a directory other than `~/AgenticOS`.
 
-Run the launchers from any git project directory, wherever it lives; `AOS_ROOT/projects/` is only a
-convenient optional place for projects. The project is the git repository root of the directory you run `aos`
-in, and only that folder is mounted into the container. The agent starts in the same subdirectory you ran
-it from. Sandcastle needs the project to be a git repository with at least one commit.
+Run the launchers from any directory inside a git repository, wherever it lives; `AOS_ROOT/projects/` is
+only a convenient optional place for projects. The project is the git repository root of the directory you run
+`aos` in, and only that folder is mounted into the container. The agent starts in the same subdirectory you ran
+it from. The repository needs at least one commit (a Sandcastle requirement); a directory outside a git
+repository is refused and `aos` never runs `git init` for you.
+
+The first time you start `aos` in a repository, it shows the full path it will mount read-write and asks
+`Approve this folder and start? [y/N]`. Yes records the repository root in `AOS_ROOT/state/approved-folders`
+(one exact path per line, mode 0600, outside every project and never mounted into a container) and starts;
+anything else exits without starting. An approved folder is never asked about again. Approval is per exact
+path: approving `~/code/app` does not approve `~/code` or `~/code/app/sub`. Without a terminal, an unapproved
+folder is refused, so approve it once from an interactive shell. To revoke an approval, delete its line from
+the file.
 
 The container path is `/home/agent/projects/<name>-<hash>`, where `<name>` is the folder's basename and
 `<hash>` is the first 8 hex characters of the SHA-256 of its real host path. It is stable for a folder, and
 `~/a/app` and `~/b/app` get different paths, so their Claude, Codex, OpenCode and Pi history and trust
-entries never collide.
-
-`aos` refuses to start when the project root is your home directory, a parent of it, or `/`, because
-mounting those would expose your whole home (SSH keys, Documents). It refuses paths containing `:` or `,`,
-which Docker bind mounts cannot express.
+entries never collide. Paths containing `:` or `,` are refused, since Docker bind mounts cannot express them.
 
 Arguments after the agent name go to the agent CLI unchanged:
 

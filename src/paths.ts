@@ -11,6 +11,8 @@ export interface AosPaths {
   readonly secrets: string;
   readonly secretsEnv: string;
   readonly sessions: string;
+  /** One approved project root per line. Lives outside every project and is never mounted into a container. */
+  readonly approvedFolders: string;
   /** Per-launch runtime directories, removed when the launch ends. */
   readonly run: string;
 }
@@ -42,14 +44,14 @@ export function aosPaths(root: string): AosPaths {
     secrets,
     secretsEnv: join(secrets, "env"),
     sessions: join(root, "state", "sessions"),
+    approvedFolders: join(root, "state", "approved-folders"),
     run: join(root, "state", "run"),
   };
 }
 
-export function locateProject(cwd: string, home: string = homedir()): ProjectLocation {
+export function locateProject(cwd: string): ProjectLocation {
   const here = realpathOrThrow(cwd, `Current directory ${cwd} does not exist.`);
   const root = gitRoot(here);
-  assertNotHomeOrAbove(root, realpathOrThrow(home, `Home directory ${home} does not exist.`));
   if (root.includes(":") || root.includes(",")) {
     throw new AosError(`Project path ${root} contains ":" or ",", which Docker bind mounts cannot express.`);
   }
@@ -72,19 +74,10 @@ function gitRoot(dir: string): string {
   const top = result.status === 0 ? result.stdout.trim() : "";
   if (top === "") {
     throw new AosError(
-      `${dir} is not inside a git repository. Sandcastle needs one: run "git init" and make a first commit, then run the command again.`,
+      `${dir} is not inside a git repository. aos needs a git repository with at least one commit: run "git init" and make a first commit in your project, then run the command again.`,
     );
   }
   return realpathOrThrow(top, `Git repository root ${top} does not exist.`);
-}
-
-export function assertNotHomeOrAbove(root: string, home: string): void {
-  const rel = relative(root, home);
-  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
-    throw new AosError(
-      `${root} is your home directory or a parent of it. Mounting it would expose your whole home, including SSH keys and documents. cd into a git project directory inside it and run the command again.`,
-    );
-  }
 }
 
 function realpathOrThrow(path: string, message: string): string {

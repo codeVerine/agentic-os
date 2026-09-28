@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { interactive } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { type AgentSpec, interactiveProvider } from "./agents.ts";
+import { type ApprovalIo, ensureApproved, terminalApprovalIo } from "./approvals.ts";
 import { applyDefaults } from "./defaults.ts";
 import { assertImageMatchesHost, hostIds, IMAGE } from "./docker.ts";
 import { AosError } from "./errors.ts";
@@ -18,12 +19,15 @@ export interface LaunchOptions {
   readonly cwd: string;
   /** The host environment aos was started with, before it was scrubbed. */
   readonly hostEnv: NodeJS.ProcessEnv;
+  /** Where the folder approval question is asked; defaults to the terminal. */
+  readonly approvalIo?: ApprovalIo;
 }
 
 export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[], options: LaunchOptions): Promise<number> {
   const { paths } = options;
   const project = locateProject(options.cwd);
   assertCommittedGitRepo(project);
+  await ensureApproved(paths.approvedFolders, project.root, options.approvalIo ?? terminalApprovalIo());
   if (!existsSync(paths.secrets)) throw new AosError(`${paths.secrets} does not exist. Run "aos init" first.`);
   const ids = hostIds();
   assertImageMatchesHost(ids);
