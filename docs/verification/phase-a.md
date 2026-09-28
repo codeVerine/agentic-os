@@ -50,6 +50,9 @@ uid=501(agent) gid=20(dialout) groups=20(dialout)
 
 The image user is `501:20`, the Mac user's UID and GID, which Sandcastle's pre-flight check requires.
 
+This build predates the `COPY codex-refresh.mjs` step and the `aos.context-hash` label that `aos image build`
+now adds; neither has been re-recorded here.
+
 ## `aos init` and `aos doctor`
 
 Fresh root:

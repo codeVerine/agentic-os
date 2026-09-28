@@ -194,7 +194,7 @@ This is the MVP's first slice. It skips, on purpose:
 ```sh
 npm run build       # tsc to dist/
 npm run typecheck   # src and tests
-npm test            # node:test unit tests (paths, secrets, per-agent environment)
+npm test            # node:test unit tests
 ```
 
 `AOS_ROOT` points every command at another root, which keeps experiments away from `~/AgenticOS`.
