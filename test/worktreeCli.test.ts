@@ -219,6 +219,22 @@ describe("aos worktree rm/prune with a still-running agent", () => {
     assert.equal(await worktreeCommand(["prune"], r.main, r.paths), 0);
     assert.equal(readRegistry(r.paths, r.key).length, 1);
   });
+
+  test("a recorded pid now reused by a process that started after aos recorded it does not block rm or prune", async () => {
+    const longAgo = "2000-01-01T00:00:00.000Z";
+    const r = repo("pid-reused");
+    const pruned = { ...branchWorktree(r, "pid-reused-prune"), createdAt: longAgo, lastUsedAt: longAgo, activePid: process.pid };
+    await seed(r, pruned);
+    heldByThisProcess(pruned);
+    assert.equal(await worktreeCommand(["prune"], r.main, r.paths), 0);
+    assert.equal(readRegistry(r.paths, r.key).length, 0);
+
+    const removed = { ...branchWorktree(r, "pid-reused-rm"), createdAt: longAgo, lastUsedAt: longAgo, activePid: process.pid };
+    await seed(r, removed);
+    heldByThisProcess(removed);
+    assert.equal(await worktreeCommand(["rm", removed.id], r.main, r.paths), 0);
+    assert.equal(readRegistry(r.paths, r.key).length, 0);
+  });
 });
 
 describe("resolveWorktreeTarget", () => {

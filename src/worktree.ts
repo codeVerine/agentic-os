@@ -350,22 +350,23 @@ export function treehouseStatus(cwd: string): TreehouseStatusEntry[] | undefined
 
 /**
  * pid of a still-running aos process using this worktree: the `aos-<pid>` that holds its treehouse
- * lease, or the one that last resumed it. rm and prune must never take such a worktree back.
+ * lease, or the one that last resumed it. rm and prune must never take such a worktree back. Both
+ * pids outlive their process in the registry and treehouse, so a pid only counts when the process
+ * now running under it had already started when aos recorded it; a later reuse of the pid does not.
  */
 export function liveHolderPid(record: WorktreeRecord, status: readonly TreehouseStatusEntry[] | undefined): number | undefined {
   const holder = status?.find((e) => e.path === record.worktreePath)?.lease_holder;
   const leasePid = holder?.startsWith("aos-") ? Number(holder.slice("aos-".length)) : undefined;
-  return [leasePid, record.activePid].find((pid): pid is number => pid !== undefined && isProcessAlive(pid));
+  if (leasePid !== undefined && startedBy(leasePid, record.createdAt)) return leasePid;
+  if (record.activePid !== undefined && startedBy(record.activePid, record.lastUsedAt)) return record.activePid;
+  return undefined;
 }
 
-function isProcessAlive(pid: number): boolean {
+function startedBy(pid: number, recordedAt: string): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
+  const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+  const started = Date.parse(result.stdout.trim());
+  return result.status === 0 && !Number.isNaN(started) && started <= Date.parse(recordedAt);
 }
 
 function checkoutNewBranch(worktreePath: string, branch: string, baseRev: string): void {
