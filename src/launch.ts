@@ -10,6 +10,7 @@ import { AosError } from "./errors.ts";
 import { terminalEnv } from "./hostenv.ts";
 import { type AosPaths, locateProject, type ProjectLocation } from "./paths.ts";
 import { ensureAgentStateDirs, readSecretsEnv, selectAgentEnv } from "./secrets.ts";
+import { resolveWorktreeTarget } from "./worktree.ts";
 
 const SANDBOX_PROJECTS_DIR = "/home/agent/projects";
 
@@ -20,8 +21,10 @@ export interface LaunchOptions {
   readonly hostEnv: NodeJS.ProcessEnv;
 }
 
-export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[], options: LaunchOptions): Promise<number> {
+export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], options: LaunchOptions): Promise<number> {
   const { paths } = options;
+  const here = rawArgs.includes("--here");
+  const agentArgs = rawArgs.filter((arg) => arg !== "--here");
   const project = locateProject(options.cwd);
   assertCommittedGitRepo(project);
   if (!existsSync(paths.secrets)) throw new AosError(`${paths.secrets} does not exist. Run "aos init" first.`);
@@ -32,10 +35,14 @@ export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[],
   for (const defaults of spec.autonomyDefaults) applyDefaults(agentDir, defaults);
   const secrets = readSecretsEnv(paths.secretsEnv);
 
+  const target = here
+    ? { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined }
+    : await resolveWorktreeTarget(spec.name, agentArgs, project, paths);
+
   // Sandcastle bind-mounts every project at the same /home/agent/workspace.
   // Agents key transcripts, trust and memory by working directory, so the agent
   // runs from a second, per-project mount of the same host directory instead.
-  const sandboxProjectRoot = `${SANDBOX_PROJECTS_DIR}/${project.sandboxName}`;
+  const sandboxProjectRoot = `${SANDBOX_PROJECTS_DIR}/${target.sandboxName}`;
   spec.trustProject?.(agentDir, sandboxProjectRoot);
   const workdir = project.subdir ? `${sandboxProjectRoot}/${project.subdir}` : sandboxProjectRoot;
   const setup = spec.launchSetup ? `${spec.launchSetup} && ` : "";
@@ -54,7 +61,7 @@ export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[],
     containerUid: ids.uid,
     containerGid: ids.gid,
     mounts: [
-      { hostPath: project.root, sandboxPath: sandboxProjectRoot },
+      { hostPath: target.hostRoot, sandboxPath: sandboxProjectRoot },
       ...spec.stateMounts.map((mount) => ({
         hostPath: mount.subdir ? join(agentDir, mount.subdir) : agentDir,
         sandboxPath: mount.sandboxPath,
@@ -65,10 +72,10 @@ export async function launchAgent(spec: AgentSpec, agentArgs: readonly string[],
 
   try {
     const result = await interactive({
-      name: `aos ${spec.name} (${project.name})`,
+      name: `aos ${spec.name} (${project.name}${target.branch ? ` @ ${target.branch}` : ""})`,
       agent: interactiveProvider(spec, argv, paths.sessions),
       sandbox,
-      cwd: project.root,
+      cwd: target.hostRoot,
       branchStrategy: { type: "head" },
       env: { ...terminalEnv(options.hostEnv), ...spec.configEnv, ...spec.launchEnv, ...selectAgentEnv(spec, secrets) },
     });
