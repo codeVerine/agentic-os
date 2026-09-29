@@ -269,15 +269,15 @@ async function sessionContainerDir(
   }
 }
 
-/** The `cwd` a Codex rollout file was recorded with (top-level or under `session_meta.payload`). */
+/** The `cwd` a Codex rollout file was recorded with, from its leading `session_meta` line's payload. */
 function codexSessionCwd(filePath: string): string | undefined {
   try {
     const firstLine = readFileSync(filePath, "utf8")
       .split("\n")
       .find((line) => line.trim() !== "");
     if (!firstLine) return undefined;
-    const parsed = JSON.parse(firstLine) as { cwd?: unknown; session_meta?: { payload?: { cwd?: unknown } } };
-    const cwd = parsed.cwd ?? parsed.session_meta?.payload?.cwd;
+    const parsed = JSON.parse(firstLine) as { type?: unknown; payload?: { cwd?: unknown } };
+    const cwd = parsed.type === "session_meta" ? parsed.payload?.cwd : undefined;
     return typeof cwd === "string" ? cwd : undefined;
   } catch {
     return undefined;

@@ -146,7 +146,11 @@ describe("findWorktreeForSession", () => {
     mkdirSync(dayDir, { recursive: true });
     writeFileSync(
       join(dayDir, "rollout-2026-09-29T00-00-00-session-xyz.jsonl"),
-      `${JSON.stringify({ session_meta: { payload: { cwd: `/home/agent/projects/${sandbox}` } } })}\n`,
+      `${JSON.stringify({
+        timestamp: "2026-09-29T00:00:00Z",
+        type: "session_meta",
+        payload: { id: "session-xyz", cwd: `/home/agent/projects/${sandbox}` },
+      })}\n`,
     );
     const records = [record("codex", sandbox)];
 
