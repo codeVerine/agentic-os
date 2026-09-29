@@ -87,38 +87,49 @@ function mergeWorktree(id: string, cwd: string, paths: AosPaths): number {
 async function removeWorktree(id: string, force: boolean, cwd: string, paths: AosPaths): Promise<number> {
   const project = locateProject(cwd);
   const key = projectKey(project.root);
-  return withRegistryLock(paths, key, (records) => {
-    const record = findRecord(records, id);
-    removeOne(project.root, record, force);
-    return { records: records.filter((r) => r.id !== record.id), value: 0 };
-  });
+  const record = findRecord(readRegistry(paths, key), id);
+  removeOne(project.root, record, force);
+  await dropRecords(paths, key, [record.id]);
+  return 0;
 }
 
 async function pruneWorktrees(cwd: string, paths: AosPaths): Promise<number> {
   const project = locateProject(cwd);
   const key = projectKey(project.root);
-  return withRegistryLock(paths, key, (records) => {
-    const kept: WorktreeRecord[] = [];
-    let removed = 0;
-    for (const record of records) {
-      if (!existsSync(record.worktreePath)) {
-        console.log(`aos: ${record.id} (${record.branch}) is gone from disk; dropping it from the registry.`);
-        removed++;
-        continue;
-      }
-      if (isWorktreeClean(record.worktreePath) && isMergedInto(project.root, record.branch)) {
-        removeOne(project.root, record, false);
-        removed++;
-        continue;
-      }
-      kept.push(record);
+  const records = readRegistry(paths, key);
+  const removedIds: string[] = [];
+  let failed = 0;
+  for (const record of records) {
+    if (!existsSync(record.worktreePath)) {
+      console.log(`aos: ${record.id} (${record.branch}) is gone from disk; dropping it from the registry.`);
+      removedIds.push(record.id);
+      continue;
     }
-    console.log(`aos: removed ${removed} worktree${removed === 1 ? "" : "s"}, kept ${kept.length}.`);
-    return { records: kept, value: 0 };
-  });
+    if (!isWorktreeClean(record.worktreePath) || !isMergedInto(project.root, record.branch)) continue;
+    try {
+      removeOne(project.root, record, false);
+      removedIds.push(record.id);
+    } catch (error) {
+      console.error(`aos: could not remove ${record.id}: ${(error as Error).message}`);
+      failed++;
+    }
+  }
+  await dropRecords(paths, key, removedIds);
+  const kept = records.length - removedIds.length;
+  console.log(`aos: removed ${removedIds.length} worktree${removedIds.length === 1 ? "" : "s"}, kept ${kept}.`);
+  return failed === 0 ? 0 : 1;
 }
 
-/** Refuses on uncommitted or unmerged work unless `force`; returns the lease and drops the branch. */
+async function dropRecords(paths: AosPaths, key: string, ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await withRegistryLock(paths, key, (records) => ({ records: records.filter((r) => !ids.includes(r.id)), value: undefined }));
+}
+
+/**
+ * Refuses on uncommitted or unmerged work unless `force`; returns the lease and drops the branch.
+ * Throws only while the lease is still held: once it is returned the caller must drop the record,
+ * so a failed branch delete is reported rather than thrown.
+ */
 function removeOne(mainRoot: string, record: WorktreeRecord, force: boolean): void {
   if (!force) {
     if (existsSync(record.worktreePath) && !isWorktreeClean(record.worktreePath)) {
@@ -135,7 +146,6 @@ function removeOne(mainRoot: string, record: WorktreeRecord, force: boolean): vo
   try {
     deleteBranch(mainRoot, record.branch, force);
   } catch (error) {
-    if (!force) throw error;
     console.error(`aos: ${(error as Error).message}`);
   }
   console.log(`aos: removed ${record.id} (${record.branch}).`);

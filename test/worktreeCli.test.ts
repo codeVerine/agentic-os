@@ -1,24 +1,40 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
-import { aosPaths } from "../src/paths.ts";
+import { aosPaths, locateProject } from "../src/paths.ts";
 import type { WorktreeRecord } from "../src/worktree.ts";
 
-// worktreeCommand's "rm" and "prune" call `treehouse return` on success. A fake, always-succeeding
-// treehouse binary lets these tests exercise that path without the real CLI installed. The env var
-// must be set before worktree.ts is first evaluated, so it is imported dynamically below.
+// A fake treehouse binary lets these tests exercise the lease and return paths without the real CLI
+// installed. It logs every call, leases whatever path AOS_FAKE_LEASE_PATH names, and fails `return`
+// for any path containing "fail-return". The env var must be set before worktree.ts is first
+// evaluated, so it is imported dynamically below.
 const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-worktree-cli-")));
 after(() => rmSync(base, { recursive: true, force: true }));
 
+const treehouseLog = join(base, "treehouse.log");
 const fakeTreehouse = join(base, "fake-treehouse");
-writeFileSync(fakeTreehouse, "#!/bin/sh\nexit 0\n");
+writeFileSync(
+  fakeTreehouse,
+  `#!/bin/sh
+echo "$@" >> "${treehouseLog}"
+case "$1" in
+  get) printf '{"path":"%s","lease_id":"fake-lease"}\\n' "$AOS_FAKE_LEASE_PATH" ;;
+  return) case "$2" in *fail-return*) echo "return refused" >&2; exit 1 ;; esac ;;
+esac
+exit 0
+`,
+);
 chmodSync(fakeTreehouse, 0o755);
 process.env.AOS_TREEHOUSE_CMD = fakeTreehouse;
 
-const { projectKey, withRegistryLock, readRegistry } = await import("../src/worktree.ts");
+function treehouseCalls(): string[] {
+  return existsSync(treehouseLog) ? readFileSync(treehouseLog, "utf8").trim().split("\n") : [];
+}
+
+const { projectKey, resolveWorktreeTarget, withRegistryLock, readRegistry } = await import("../src/worktree.ts");
 const { worktreeCommand } = await import("../src/worktreeCli.ts");
 
 interface Repo {
@@ -136,5 +152,52 @@ describe("aos worktree list/merge/rm/prune", () => {
       remaining.map((rec) => rec.id),
       [unmerged.id],
     );
+  });
+
+  test("prune drops the records it did release and keeps the one whose treehouse return failed", async () => {
+    const r = repo("prune-partial");
+    const failing = branchWorktree(r, "fail-return-1");
+    await seed(r, failing);
+    const ok = branchWorktree(r, "prune-partial-ok");
+    await seed(r, ok);
+
+    assert.equal(await worktreeCommand(["prune"], r.main, r.paths), 1);
+
+    assert.deepEqual(
+      readRegistry(r.paths, r.key).map((rec) => rec.id),
+      [failing.id],
+    );
+  });
+});
+
+describe("resolveWorktreeTarget", () => {
+  test("returns the lease and deletes the new branch when setup fails after leasing", async () => {
+    const r = repo("lease-leak");
+    const leased = join(base, "lease-leak-slot");
+    execFileSync("git", ["-C", r.main, "worktree", "add", "--quiet", "--detach", leased]);
+    process.env.AOS_FAKE_LEASE_PATH = leased;
+    mkdirSync(join(r.paths.worktrees, ".."), { recursive: true });
+    writeFileSync(r.paths.worktrees, "not a directory");
+
+    await assert.rejects(resolveWorktreeTarget("claude", [], locateProject(r.main), r.paths, join(base, "lease-leak-agent")));
+
+    assert.ok(treehouseCalls().includes(`return ${leased} --force`));
+    const branches = execFileSync("git", ["-C", r.main, "branch", "--list", "aos/*"], { encoding: "utf8" });
+    assert.equal(branches.trim(), "");
+  });
+
+  test("an explicit claude session id that ran in the main checkout resumes there instead of leasing", async () => {
+    const r = repo("resume-main");
+    const project = locateProject(r.main);
+    const agentDir = join(base, "resume-main-agent");
+    const sessionDir = join(agentDir, "projects", `-home-agent-projects-${project.sandboxName}`);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, "session-main.jsonl"), "{}\n");
+    const leasesBefore = treehouseCalls().filter((call) => call.startsWith("get")).length;
+
+    const target = await resolveWorktreeTarget("claude", ["--resume", "session-main"], project, r.paths, agentDir);
+
+    assert.deepEqual(target, { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined, created: false });
+    assert.equal(treehouseCalls().filter((call) => call.startsWith("get")).length, leasesBefore);
   });
 });

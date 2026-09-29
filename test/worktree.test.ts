@@ -23,8 +23,10 @@ import {
 } from "../src/worktree.ts";
 
 describe("detectResumeIntent", () => {
-  test("claude: --resume and -c/--continue, not a plain launch", () => {
+  test("claude: -r/--resume and -c/--continue, not a plain launch", () => {
     assert.equal(detectResumeIntent("claude", ["--resume"]), true);
+    assert.equal(detectResumeIntent("claude", ["-r"]), true);
+    assert.equal(detectResumeIntent("claude", ["--resume=abc-123"]), true);
     assert.equal(detectResumeIntent("claude", ["--resume", "abc-123"]), true);
     assert.equal(detectResumeIntent("claude", ["-c"]), true);
     assert.equal(detectResumeIntent("claude", ["--continue"]), true);
@@ -44,6 +46,7 @@ describe("detectResumeIntent", () => {
     assert.equal(detectResumeIntent("opencode", ["--continue"]), true);
     assert.equal(detectResumeIntent("opencode", ["-s", "abc"]), true);
     assert.equal(detectResumeIntent("opencode", ["--session", "abc"]), true);
+    assert.equal(detectResumeIntent("opencode", ["--session=abc"]), true);
     assert.equal(detectResumeIntent("opencode", ["--model", "gpt"]), false);
   });
 
@@ -53,13 +56,19 @@ describe("detectResumeIntent", () => {
     assert.equal(detectResumeIntent("pi", ["--resume"]), true);
     assert.equal(detectResumeIntent("pi", ["--session", "abc"]), true);
     assert.equal(detectResumeIntent("pi", ["--session-id", "abc"]), true);
+    assert.equal(detectResumeIntent("pi", ["--session=abc"]), true);
+    assert.equal(detectResumeIntent("pi", ["--session-id=abc"]), true);
     assert.equal(detectResumeIntent("pi", ["--thinking", "high"]), false);
   });
 });
 
 describe("extractExplicitSessionId", () => {
-  test("claude: the value after --resume, not when it is bare or followed by another flag", () => {
+  test("claude: the value of -r/--resume, not when it is bare or followed by another flag", () => {
     assert.equal(extractExplicitSessionId("claude", ["--resume", "abc-123"]), "abc-123");
+    assert.equal(extractExplicitSessionId("claude", ["--resume=abc-123"]), "abc-123");
+    assert.equal(extractExplicitSessionId("claude", ["-r", "abc-123"]), "abc-123");
+    assert.equal(extractExplicitSessionId("claude", ["-r"]), undefined);
+    assert.equal(extractExplicitSessionId("claude", ["--resume="]), undefined);
     assert.equal(extractExplicitSessionId("claude", ["--resume"]), undefined);
     assert.equal(extractExplicitSessionId("claude", ["--resume", "--verbose"]), undefined);
     assert.equal(extractExplicitSessionId("claude", ["-c"]), undefined);
@@ -74,12 +83,15 @@ describe("extractExplicitSessionId", () => {
   test("opencode: the value after -s or --session", () => {
     assert.equal(extractExplicitSessionId("opencode", ["-s", "abc-123"]), "abc-123");
     assert.equal(extractExplicitSessionId("opencode", ["--session", "abc-123"]), "abc-123");
+    assert.equal(extractExplicitSessionId("opencode", ["--session=abc-123"]), "abc-123");
     assert.equal(extractExplicitSessionId("opencode", ["-c"]), undefined);
   });
 
   test("pi: the value after --session or --session-id", () => {
     assert.equal(extractExplicitSessionId("pi", ["--session", "abc-123"]), "abc-123");
     assert.equal(extractExplicitSessionId("pi", ["--session-id", "abc-123"]), "abc-123");
+    assert.equal(extractExplicitSessionId("pi", ["--session=abc-123"]), "abc-123");
+    assert.equal(extractExplicitSessionId("pi", ["--session-id=abc-123"]), "abc-123");
     assert.equal(extractExplicitSessionId("pi", ["-r"]), undefined);
   });
 });
@@ -87,6 +99,7 @@ describe("extractExplicitSessionId", () => {
 describe("findWorktreeForSession", () => {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-session-lookup-")));
   after(() => rmSync(base, { recursive: true, force: true }));
+  const mainSandbox = "repo-feedf00d";
 
   const record = (agent: "claude" | "codex" | "pi", sandbox: string): WorktreeRecord => ({
     id: sandbox,
@@ -108,12 +121,22 @@ describe("findWorktreeForSession", () => {
     writeFileSync(join(projectDir, "session-abc.jsonl"), "{}\n");
     const records = [record("claude", sandbox)];
 
-    const found = await findWorktreeForSession("claude", "session-abc", agentDir, records);
-    assert.equal(found.unsupported, false);
-    assert.equal(found.record?.sandboxName, sandbox);
+    const found = await findWorktreeForSession("claude", "session-abc", agentDir, records, mainSandbox);
+    assert.equal(found.kind === "worktree" && found.record.sandboxName, sandbox);
 
-    const missing = await findWorktreeForSession("claude", "no-such-session", agentDir, records);
-    assert.equal(missing.record, undefined);
+    const missing = await findWorktreeForSession("claude", "no-such-session", agentDir, records, mainSandbox);
+    assert.equal(missing.kind, "not-found");
+  });
+
+  test("claude: a session that ran in the project's own checkout maps to the main checkout, not a worktree", async () => {
+    const agentDir = join(base, "claude-main");
+    const projectDir = join(agentDir, "projects", `-home-agent-projects-${mainSandbox}`);
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(projectDir, "session-here.jsonl"), "{}\n");
+    const records = [record("claude", "repo-deadbeef")];
+
+    const found = await findWorktreeForSession("claude", "session-here", agentDir, records, mainSandbox);
+    assert.equal(found.kind, "main-checkout");
   });
 
   test("codex: reads the rollout file's own cwd field instead of a directory name", async () => {
@@ -127,8 +150,8 @@ describe("findWorktreeForSession", () => {
     );
     const records = [record("codex", sandbox)];
 
-    const found = await findWorktreeForSession("codex", "session-xyz", agentDir, records);
-    assert.equal(found.record?.sandboxName, sandbox);
+    const found = await findWorktreeForSession("codex", "session-xyz", agentDir, records, mainSandbox);
+    assert.equal(found.kind === "worktree" && found.record.sandboxName, sandbox);
   });
 
   test("pi: finds the record from a filename ending _<id>.jsonl under its session directory", async () => {
@@ -139,14 +162,13 @@ describe("findWorktreeForSession", () => {
     writeFileSync(join(sessionDir, `2026-09-29T00-00-00-000Z_session-pi-1.jsonl`), "{}\n");
     const records = [record("pi", sandbox)];
 
-    const found = await findWorktreeForSession("pi", "session-pi-1", agentDir, records);
-    assert.equal(found.record?.sandboxName, sandbox);
+    const found = await findWorktreeForSession("pi", "session-pi-1", agentDir, records, mainSandbox);
+    assert.equal(found.kind === "worktree" && found.record.sandboxName, sandbox);
   });
 
   test("opencode: reported as unsupported rather than guessed at", async () => {
-    const found = await findWorktreeForSession("opencode", "anything", join(base, "opencode-agent"), []);
-    assert.equal(found.unsupported, true);
-    assert.equal(found.record, undefined);
+    const found = await findWorktreeForSession("opencode", "anything", join(base, "opencode-agent"), [], mainSandbox);
+    assert.equal(found.kind, "unsupported");
   });
 });
 

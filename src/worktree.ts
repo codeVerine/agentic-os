@@ -34,9 +34,16 @@ export interface WorktreeRecord {
 export interface WorktreeTarget {
   readonly hostRoot: string;
   readonly sandboxName: string;
-  readonly branch: string;
+  readonly branch: string | undefined;
   readonly created: boolean;
 }
+
+/** Where an explicit session id's conversation lives, as far as aos can tell from the host. */
+export type SessionLocation =
+  | { readonly kind: "worktree"; readonly record: WorktreeRecord }
+  | { readonly kind: "main-checkout" }
+  | { readonly kind: "not-found" }
+  | { readonly kind: "unsupported" };
 
 const STALE_LOCK_MS = 10_000;
 
@@ -56,7 +63,8 @@ export function assertTreehouseInstalled(agentName: string, cmd: string = TREEHO
 
 /**
  * Resolves where an `aos <agent>` launch should run: an existing worktree when the agent's own
- * args ask to resume or continue and one exists for this project, otherwise a freshly leased one.
+ * args ask to resume or continue and one exists for this project, this checkout itself when an
+ * explicit session id ran here rather than in an aos worktree, otherwise a freshly leased one.
  * Callers pass `--here` launches around this entirely; see launch.ts.
  */
 export async function resolveWorktreeTarget(
@@ -75,14 +83,17 @@ export async function resolveWorktreeTarget(
     let picked: WorktreeRecord | undefined;
 
     if (explicitId) {
-      const found = await findWorktreeForSession(agentName, explicitId, agentStateDir, records);
-      if (found.unsupported) {
+      const found = await findWorktreeForSession(agentName, explicitId, agentStateDir, records, project.sandboxName);
+      if (found.kind === "unsupported") {
         console.error(
           `aos: can't map a ${agentName} session id to a worktree automatically (no reliable per-session host index for ${agentName}); using the most recently used ${agentName} worktree for this project instead.`,
         );
         picked = mostRecentlyUsed(records, agentName);
-      } else if (found.record) {
+      } else if (found.kind === "worktree") {
         picked = found.record;
+      } else if (found.kind === "main-checkout") {
+        console.error(`aos: ${agentName} session "${explicitId}" ran in ${project.root} itself, not in an aos worktree; resuming it there.`);
+        return { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined, created: false };
       } else {
         console.error(`aos: no aos worktree for this project has a ${agentName} session "${explicitId}"; leasing a new worktree.`);
       }
@@ -104,25 +115,45 @@ export async function resolveWorktreeTarget(
 
   const holder = `aos-${process.pid}`;
   const lease = leaseWorktree(project.root, holder);
-  const baseRev = git(project.root, "rev-parse", "HEAD");
   const id = newId();
   const branch = `aos/${agentName}/${id}`;
-  checkoutNewBranch(lease.path, branch, baseRev);
-  assertGitMetadataMountable(lease.path);
-  const boxName = sandboxName(project.name, `${key}::${branch}`);
-  const record: WorktreeRecord = {
-    id,
-    agent: agentName,
-    branch,
-    worktreePath: lease.path,
-    sandboxName: boxName,
-    baseRev,
-    createdAt: new Date().toISOString(),
-    lastUsedAt: new Date().toISOString(),
-    leaseId: lease.leaseId,
-  };
-  await withRegistryLock(paths, key, (records) => ({ records: [...records, record], value: record }));
-  return { hostRoot: record.worktreePath, sandboxName: record.sandboxName, branch: record.branch, created: true };
+  let branchCreated = false;
+  try {
+    const baseRev = git(project.root, "rev-parse", "HEAD");
+    checkoutNewBranch(lease.path, branch, baseRev);
+    branchCreated = true;
+    assertGitMetadataMountable(lease.path);
+    const record: WorktreeRecord = {
+      id,
+      agent: agentName,
+      branch,
+      worktreePath: lease.path,
+      sandboxName: sandboxName(project.name, `${key}::${branch}`),
+      baseRev,
+      createdAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
+      leaseId: lease.leaseId,
+    };
+    await withRegistryLock(paths, key, (records) => ({ records: [...records, record], value: undefined }));
+    return { hostRoot: record.worktreePath, sandboxName: record.sandboxName, branch: record.branch, created: true };
+  } catch (error) {
+    releaseUnregisteredLease(project.root, lease.path, branchCreated ? branch : undefined);
+    throw error;
+  }
+}
+
+/** Undoes a lease whose setup failed before it was registered, so the pool never leaks it. */
+function releaseUnregisteredLease(mainRoot: string, worktreePath: string, branch: string | undefined): void {
+  const steps = branch
+    ? [() => detachWorktree(worktreePath), () => returnWorktree(worktreePath), () => deleteBranch(mainRoot, branch, true)]
+    : [() => returnWorktree(worktreePath)];
+  for (const step of steps) {
+    try {
+      step();
+    } catch (error) {
+      console.error(`aos: cleanup after a failed launch: ${(error as Error).message}`);
+    }
+  }
 }
 
 /** Stable identity for "this repository", the same from the main checkout or any of its worktrees. */
@@ -143,18 +174,22 @@ function newId(): string {
  * need to parse or track individual session ids.
  */
 export function detectResumeIntent(agent: AgentName, args: readonly string[]): boolean {
+  const has = (...flags: string[]): boolean => args.some((a) => flags.includes(flagName(a)));
   switch (agent) {
     case "claude":
-      return args.some((a) => a === "--resume" || a === "-c" || a === "--continue");
+      return has("-r", "--resume", "-c", "--continue");
     case "codex":
       return args[0] === "resume";
     case "opencode":
-      return args.some((a) => a === "-c" || a === "--continue" || a === "-s" || a === "--session");
+      return has("-c", "--continue", "-s", "--session");
     case "pi":
-      return args.some(
-        (a) => a === "-c" || a === "--continue" || a === "-r" || a === "--resume" || a === "--session" || a === "--session-id",
-      );
+      return has("-c", "--continue", "-r", "--resume", "--session", "--session-id");
   }
+}
+
+/** A long option's name without any `=value`; any other argument unchanged. */
+function flagName(arg: string): string {
+  return arg.startsWith("--") ? arg.split("=", 1)[0]! : arg;
 }
 
 export function mostRecentlyUsed(records: readonly WorktreeRecord[], agent: AgentName): WorktreeRecord | undefined {
@@ -164,13 +199,15 @@ export function mostRecentlyUsed(records: readonly WorktreeRecord[], agent: Agen
 /** The session id named on an explicit `--resume <id>` / `resume <id>` / `--session <id>` argument, if any. */
 export function extractExplicitSessionId(agent: AgentName, args: readonly string[]): string | undefined {
   const valueAfter = (flag: string): string | undefined => {
-    const i = args.indexOf(flag);
-    const next = i >= 0 ? args[i + 1] : undefined;
-    return next !== undefined && !next.startsWith("-") ? next : undefined;
+    const i = args.findIndex((a) => flagName(a) === flag);
+    if (i < 0) return undefined;
+    const arg = args[i]!;
+    const value = arg.length > flag.length ? arg.slice(flag.length + 1) : args[i + 1];
+    return value !== undefined && value !== "" && !value.startsWith("-") ? value : undefined;
   };
   switch (agent) {
     case "claude":
-      return valueAfter("--resume");
+      return valueAfter("--resume") ?? valueAfter("-r");
     case "codex":
       return args[0] === "resume" && args[1] !== undefined && !args[1].startsWith("-") ? args[1] : undefined;
     case "opencode":
@@ -181,7 +218,8 @@ export function extractExplicitSessionId(agent: AgentName, args: readonly string
 }
 
 /**
- * Finds which of this project's worktrees, if any, holds a given session id, by searching that
+ * Finds which of this project's worktrees, or its own checkout (`mainSandboxName`, as used by
+ * `--here` and by launches from before worktree support), holds a given session id, by searching that
  * agent's own history under its aos secrets/state directory on the host — the same place a launch
  * mounts into the container. Claude and Codex expose a host-side lookup from Sandcastle directly;
  * Pi's own session files live the same way (one directory per container cwd) but Sandcastle keeps
@@ -194,26 +232,34 @@ export async function findWorktreeForSession(
   sessionId: string,
   agentStateDir: string,
   records: readonly WorktreeRecord[],
-): Promise<{ record: WorktreeRecord | undefined; unsupported: boolean }> {
-  const forAgent = records.filter((r) => r.agent === agent);
-  const byContainerHash = (needle: string | undefined): WorktreeRecord | undefined =>
-    needle === undefined ? undefined : forAgent.find((r) => needle.includes(r.sandboxName.slice(-8)));
+  mainSandboxName: string,
+): Promise<SessionLocation> {
+  if (agent === "opencode") return { kind: "unsupported" };
+  const containerDir = await sessionContainerDir(agent, sessionId, agentStateDir);
+  if (containerDir === undefined) return { kind: "not-found" };
+  const holds = (name: string): boolean => containerDir.includes(name.slice(-8));
+  const record = records.find((r) => r.agent === agent && holds(r.sandboxName));
+  if (record) return { kind: "worktree", record };
+  return holds(mainSandboxName) ? { kind: "main-checkout" } : { kind: "not-found" };
+}
 
+/** The host-side trace of the container directory a session ran in: a directory name or a recorded cwd. */
+async function sessionContainerDir(
+  agent: Exclude<AgentName, "opencode">,
+  sessionId: string,
+  agentStateDir: string,
+): Promise<string | undefined> {
   switch (agent) {
     case "claude": {
       const found = await findClaudeSessionOnHost(sessionId, join(agentStateDir, "projects")).catch(() => undefined);
-      return { record: byContainerHash(found?.path && basename(dirname(found.path))), unsupported: false };
+      return found?.path ? basename(dirname(found.path)) : undefined;
     }
     case "codex": {
       const found = await findCodexSessionOnHost(sessionId, join(agentStateDir, "sessions")).catch(() => undefined);
-      return { record: found?.path ? byContainerHash(codexSessionCwd(found.path)) : undefined, unsupported: false };
+      return found?.path ? codexSessionCwd(found.path) : undefined;
     }
-    case "pi": {
-      const folder = findPiSessionFolder(join(agentStateDir, "sessions"), sessionId);
-      return { record: byContainerHash(folder), unsupported: false };
-    }
-    case "opencode":
-      return { record: undefined, unsupported: true };
+    case "pi":
+      return findPiSessionFolder(join(agentStateDir, "sessions"), sessionId);
   }
 }
 

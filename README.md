@@ -119,15 +119,17 @@ own branch and its own files, without waiting on each other or on git status in 
   `aos worktree merge <id>` from the branch you want it on (usually your main checkout), then
   `aos worktree rm <id>` to release the lease and delete the now-merged branch. `aos worktree prune` does
   both steps for every worktree that already qualifies.
-- **Resume and continue land you back in the right worktree, automatically.** Claude's `--resume`/`-c`/
+- **Resume and continue land you back in the right worktree, automatically.** Claude's `-r`/`--resume`/`-c`/
   `--continue`, Codex's `resume` subcommand, OpenCode's `-c`/`--session`, and Pi's `-c`/`-r`/`--session[-id]`
   all scope their own session lookup to the directory the agent is running in, so `aos` detects those flags
   and picks a worktree for you instead of leasing a new one — no separate `aos` session flag to remember or
-  pass:
+  pass. Long flags are recognised in both `--flag value` and `--flag=value` form:
   - **An explicit session id** (`claude --resume <id>`, `codex resume <id>`, `opencode --session <id>`,
     `pi --session <id>`/`--session-id <id>`) is looked up in that agent's own history under
     `~/AgenticOS/secrets/<agent>/` on the host — the same place a launch mounts into the container — and
-    mapped back to whichever worktree it belongs to, however old. This works for Claude, Codex and Pi, whose
+    mapped back to whichever worktree it belongs to, however old. A session that ran in the project's own
+    checkout instead (started with `--here`, or before worktree support) resumes there, exactly as `--here`
+    would, without leasing anything. This works for Claude, Codex and Pi, whose
     history is either indexed by session id on disk (Claude, Codex) or laid out one directory per worktree
     the same way (Pi). **OpenCode keeps its sessions in a single SQLite database with no documented
     per-session-id index**, so `aos` cannot map an explicit `--session <id>` to a worktree reliably; it falls
