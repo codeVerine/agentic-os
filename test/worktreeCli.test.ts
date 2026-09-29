@@ -15,11 +15,13 @@ const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-worktree-cli-")));
 after(() => rmSync(base, { recursive: true, force: true }));
 
 const treehouseLog = join(base, "treehouse.log");
+const treehouseRootLog = join(base, "treehouse-root.log");
 const fakeTreehouse = join(base, "fake-treehouse");
 writeFileSync(
   fakeTreehouse,
   `#!/bin/sh
 echo "$@" >> "${treehouseLog}"
+echo "$TREEHOUSE_ROOT" >> "${treehouseRootLog}"
 case "$1" in
   get) printf '{"path":"%s","lease_id":"fake-lease"}\\n' "$AOS_FAKE_LEASE_PATH" ;;
   return) case "$2" in *fail-return*) echo "return refused" >&2; exit 1 ;; esac ;;
@@ -30,6 +32,8 @@ exit 0
 );
 chmodSync(fakeTreehouse, 0o755);
 process.env.AOS_TREEHOUSE_CMD = fakeTreehouse;
+const hostTreehouseRoot = join(base, "custom-pool");
+process.env.TREEHOUSE_ROOT = hostTreehouseRoot;
 
 function treehouseCalls(): string[] {
   return existsSync(treehouseLog) ? readFileSync(treehouseLog, "utf8").trim().split("\n") : [];
@@ -37,6 +41,8 @@ function treehouseCalls(): string[] {
 
 const { projectKey, resolveWorktreeTarget, withRegistryLock, readRegistry } = await import("../src/worktree.ts");
 const { worktreeCommand } = await import("../src/worktreeCli.ts");
+// cli.ts strips process.env before any treehouse call; treehouse must still see the host's pool root.
+delete process.env.TREEHOUSE_ROOT;
 
 interface Repo {
   readonly main: string;
@@ -84,6 +90,14 @@ describe("aos worktree list/merge/rm/prune", () => {
     const record = branchWorktree(r, "list-1");
     await seed(r, record);
     assert.equal(await worktreeCommand(["list"], r.main, r.paths), 0);
+  });
+
+  test("treehouse runs with the host's TREEHOUSE_ROOT even after process.env is stripped", async () => {
+    const r = repo("treehouse-root");
+    await seed(r, branchWorktree(r, "root-1"));
+    rmSync(treehouseRootLog, { force: true });
+    assert.equal(await worktreeCommand(["list"], r.main, r.paths), 0);
+    assert.deepEqual(readFileSync(treehouseRootLog, "utf8").trim().split("\n"), [hostTreehouseRoot]);
   });
 
   test("merge lands the branch's commits on the current branch, without touching the registry", async () => {

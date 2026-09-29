@@ -11,6 +11,19 @@ import { assertGitMetadataMountable, gitCommonDir, sandboxName, type AosPaths, t
 /** Command name for the treehouse CLI, overridable in tests. */
 export const TREEHOUSE_CMD = process.env.AOS_TREEHOUSE_CMD ?? "treehouse";
 
+/**
+ * The host's treehouse settings (TREEHOUSE_ROOT and friends), captured when this module loads:
+ * cli.ts later strips process.env down to what Sandcastle may see, and without these treehouse
+ * would lease from a different pool than the user's own treehouse CLI shows.
+ */
+const TREEHOUSE_HOST_ENV = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => key.startsWith("TREEHOUSE_")),
+);
+
+function treehouseEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, ...TREEHOUSE_HOST_ENV };
+}
+
 /** A worktree aos leased from treehouse for one agent run, tracked for its whole life. */
 export interface WorktreeRecord {
   /** Short id embedded in the branch name and used to address the worktree from the CLI. */
@@ -51,7 +64,7 @@ const STALE_LOCK_MS = 10_000;
 
 /** treehouse's own version string, or undefined when it is not on PATH. For `aos doctor`. */
 export function treehouseVersion(cmd: string = TREEHOUSE_CMD): string | undefined {
-  const result = spawnSync(cmd, ["--version"], { encoding: "utf8" });
+  const result = spawnSync(cmd, ["--version"], { encoding: "utf8", env: treehouseEnv() });
   return result.error ? undefined : result.stdout.trim();
 }
 
@@ -296,7 +309,7 @@ function findPiSessionFolder(sessionsDir: string, sessionId: string): string | u
 }
 
 function leaseWorktree(cwd: string, holder: string): { path: string; leaseId: string } {
-  const result = spawnSync(TREEHOUSE_CMD, ["get", "--lease", "--json", "--lease-holder", holder], { cwd, encoding: "utf8" });
+  const result = spawnSync(TREEHOUSE_CMD, ["get", "--lease", "--json", "--lease-holder", holder], { cwd, encoding: "utf8", env: treehouseEnv() });
   if (result.error) throw new AosError(`treehouse get --lease failed to start: ${result.error.message}`);
   if (result.status !== 0) {
     throw new AosError(`treehouse get --lease failed: ${(result.stderr || result.stdout).trim()}`);
@@ -325,7 +338,7 @@ export function detachWorktree(worktreePath: string): void {
 }
 
 export function returnWorktree(worktreePath: string): void {
-  const result = spawnSync(TREEHOUSE_CMD, ["return", worktreePath, "--force"], { encoding: "utf8" });
+  const result = spawnSync(TREEHOUSE_CMD, ["return", worktreePath, "--force"], { encoding: "utf8", env: treehouseEnv() });
   if (result.status !== 0) throw new AosError(`treehouse return ${worktreePath} failed: ${(result.stderr || result.stdout).trim()}`);
 }
 
@@ -339,7 +352,7 @@ export interface TreehouseStatusEntry {
 
 /** Live pool status, or undefined when treehouse is not installed or the call fails. */
 export function treehouseStatus(cwd: string): TreehouseStatusEntry[] | undefined {
-  const result = spawnSync(TREEHOUSE_CMD, ["status", "--json"], { cwd, encoding: "utf8" });
+  const result = spawnSync(TREEHOUSE_CMD, ["status", "--json"], { cwd, encoding: "utf8", env: treehouseEnv() });
   if (result.status !== 0) return undefined;
   try {
     return JSON.parse(result.stdout.trim()) as TreehouseStatusEntry[];
