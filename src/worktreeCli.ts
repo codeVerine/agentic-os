@@ -7,12 +7,14 @@ import {
   detachWorktree,
   isMergedInto,
   isWorktreeClean,
+  liveHolderPid,
   mergeLocally,
   projectKey,
   readRegistry,
   returnWorktree,
   treehouseStatus,
   withRegistryLock,
+  type TreehouseStatusEntry,
   type WorktreeRecord,
 } from "./worktree.ts";
 
@@ -88,7 +90,7 @@ async function removeWorktree(id: string, force: boolean, cwd: string, paths: Ao
   const project = locateProject(cwd);
   const key = projectKey(project.root);
   const record = findRecord(readRegistry(paths, key), id);
-  removeOne(project.root, record, force);
+  removeOne(project.root, record, force, treehouseStatus(project.root));
   await dropRecords(paths, key, [record.id]);
   return 0;
 }
@@ -97,6 +99,7 @@ async function pruneWorktrees(cwd: string, paths: AosPaths): Promise<number> {
   const project = locateProject(cwd);
   const key = projectKey(project.root);
   const records = readRegistry(paths, key);
+  const status = treehouseStatus(project.root);
   const removedIds: string[] = [];
   let failed = 0;
   for (const record of records) {
@@ -106,8 +109,13 @@ async function pruneWorktrees(cwd: string, paths: AosPaths): Promise<number> {
       continue;
     }
     if (!isWorktreeClean(record.worktreePath) || !isMergedInto(project.root, record.branch)) continue;
+    const pid = liveHolderPid(record, status);
+    if (pid !== undefined) {
+      console.log(`aos: ${record.id} (${record.branch}) is still in use by running aos process ${pid}; skipping it.`);
+      continue;
+    }
     try {
-      removeOne(project.root, record, false);
+      removeOne(project.root, record, false, status);
       removedIds.push(record.id);
     } catch (error) {
       console.error(`aos: could not remove ${record.id}: ${(error as Error).message}`);
@@ -126,12 +134,21 @@ async function dropRecords(paths: AosPaths, key: string, ids: readonly string[])
 }
 
 /**
- * Refuses on uncommitted or unmerged work unless `force`; returns the lease and drops the branch.
+ * Refuses on a still-running agent, uncommitted or unmerged work unless `force`; returns the lease and drops the branch.
  * Throws only while the lease is still held: once it is returned the caller must drop the record,
  * so a failed branch delete is reported rather than thrown.
  */
-function removeOne(mainRoot: string, record: WorktreeRecord, force: boolean): void {
+function removeOne(
+  mainRoot: string,
+  record: WorktreeRecord,
+  force: boolean,
+  status: readonly TreehouseStatusEntry[] | undefined,
+): void {
   if (!force) {
+    const pid = liveHolderPid(record, status);
+    if (pid !== undefined) {
+      throw new AosError(`${record.id} is still in use by running aos process ${pid}. Exit that agent first, or run with --force.`);
+    }
     if (existsSync(record.worktreePath) && !isWorktreeClean(record.worktreePath)) {
       throw new AosError(`${record.worktreePath} has uncommitted changes. Commit or discard them, or run with --force.`);
     }

@@ -8,8 +8,8 @@ import { aosPaths, locateProject } from "../src/paths.ts";
 import type { WorktreeRecord } from "../src/worktree.ts";
 
 // A fake treehouse binary lets these tests exercise the lease and return paths without the real CLI
-// installed. It logs every call, leases whatever path AOS_FAKE_LEASE_PATH names, and fails `return`
-// for any path containing "fail-return". The env var must be set before worktree.ts is first
+// installed. It logs every call, leases whatever path AOS_FAKE_LEASE_PATH names, reports
+// AOS_FAKE_STATUS as its pool status, and fails `return` for any path containing "fail-return". The env var must be set before worktree.ts is first
 // evaluated, so it is imported dynamically below.
 const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-worktree-cli-")));
 after(() => rmSync(base, { recursive: true, force: true }));
@@ -23,6 +23,7 @@ echo "$@" >> "${treehouseLog}"
 case "$1" in
   get) printf '{"path":"%s","lease_id":"fake-lease"}\\n' "$AOS_FAKE_LEASE_PATH" ;;
   return) case "$2" in *fail-return*) echo "return refused" >&2; exit 1 ;; esac ;;
+  status) printf '%s\\n' "\${AOS_FAKE_STATUS:-[]}" ;;
 esac
 exit 0
 `,
@@ -167,6 +168,56 @@ describe("aos worktree list/merge/rm/prune", () => {
       readRegistry(r.paths, r.key).map((rec) => rec.id),
       [failing.id],
     );
+  });
+});
+
+function heldByThisProcess(record: WorktreeRecord): void {
+  process.env.AOS_FAKE_STATUS = JSON.stringify([
+    { name: record.id, path: record.worktreePath, status: "leased", lease_id: "fake-lease", lease_holder: `aos-${process.pid}` },
+  ]);
+}
+
+describe("aos worktree rm/prune with a still-running agent", () => {
+  after(() => delete process.env.AOS_FAKE_STATUS);
+
+  test("rm refuses a merged, clean worktree whose aos lease holder is alive, unless --force", async () => {
+    const r = repo("rm-live");
+    const record = branchWorktree(r, "rm-live-1");
+    await seed(r, record);
+    heldByThisProcess(record);
+
+    await assert.rejects(worktreeCommand(["rm", record.id], r.main, r.paths), new RegExp(`still in use by running aos process ${process.pid}`));
+    assert.equal(readRegistry(r.paths, r.key).length, 1);
+
+    assert.equal(await worktreeCommand(["rm", record.id, "--force"], r.main, r.paths), 0);
+    assert.equal(readRegistry(r.paths, r.key).length, 0);
+  });
+
+  test("prune skips a merged, clean worktree whose aos lease holder is alive", async () => {
+    const r = repo("prune-live");
+    const live = branchWorktree(r, "prune-live-1");
+    await seed(r, live);
+    const idle = branchWorktree(r, "prune-idle-1");
+    await seed(r, idle);
+    heldByThisProcess(live);
+
+    assert.equal(await worktreeCommand(["prune"], r.main, r.paths), 0);
+    assert.deepEqual(
+      readRegistry(r.paths, r.key).map((rec) => rec.id),
+      [live.id],
+    );
+  });
+
+  test("prune also skips a worktree a still-running aos process resumed, after the original holder exited", async () => {
+    const r = repo("prune-resumed");
+    const record = { ...branchWorktree(r, "prune-resumed-1"), activePid: process.pid };
+    await seed(r, record);
+    process.env.AOS_FAKE_STATUS = JSON.stringify([
+      { name: record.id, path: record.worktreePath, status: "leased", lease_id: "fake-lease", lease_holder: "aos-999999999" },
+    ]);
+
+    assert.equal(await worktreeCommand(["prune"], r.main, r.paths), 0);
+    assert.equal(readRegistry(r.paths, r.key).length, 1);
   });
 });
 

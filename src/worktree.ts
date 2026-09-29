@@ -29,6 +29,8 @@ export interface WorktreeRecord {
   lastUsedAt: string;
   /** treehouse lease id, held from creation until `aos worktree rm`. */
   readonly leaseId: string;
+  /** pid of the aos process that last launched an agent here, which may outlive the original lease holder. */
+  activePid?: number;
 }
 
 export interface WorktreeTarget {
@@ -104,7 +106,10 @@ export async function resolveWorktreeTarget(
     if (picked && existsSync(picked.worktreePath)) {
       await withRegistryLock(paths, key, (all) => {
         const record = all.find((r) => r.id === picked?.id);
-        if (record) record.lastUsedAt = new Date().toISOString();
+        if (record) {
+          record.lastUsedAt = new Date().toISOString();
+          record.activePid = process.pid;
+        }
         return { records: all, value: undefined };
       });
       return { hostRoot: picked.worktreePath, sandboxName: picked.sandboxName, branch: picked.branch, created: false };
@@ -133,6 +138,7 @@ export async function resolveWorktreeTarget(
       createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
       leaseId: lease.leaseId,
+      activePid: process.pid,
     };
     await withRegistryLock(paths, key, (records) => ({ records: [...records, record], value: undefined }));
     return { hostRoot: record.worktreePath, sandboxName: record.sandboxName, branch: record.branch, created: true };
@@ -339,6 +345,26 @@ export function treehouseStatus(cwd: string): TreehouseStatusEntry[] | undefined
     return JSON.parse(result.stdout.trim()) as TreehouseStatusEntry[];
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * pid of a still-running aos process using this worktree: the `aos-<pid>` that holds its treehouse
+ * lease, or the one that last resumed it. rm and prune must never take such a worktree back.
+ */
+export function liveHolderPid(record: WorktreeRecord, status: readonly TreehouseStatusEntry[] | undefined): number | undefined {
+  const holder = status?.find((e) => e.path === record.worktreePath)?.lease_holder;
+  const leasePid = holder?.startsWith("aos-") ? Number(holder.slice("aos-".length)) : undefined;
+  return [leasePid, record.activePid].find((pid): pid is number => pid !== undefined && isProcessAlive(pid));
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
