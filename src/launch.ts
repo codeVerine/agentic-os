@@ -10,7 +10,7 @@ import { AosError } from "./errors.ts";
 import { terminalEnv } from "./hostenv.ts";
 import { type AosPaths, locateProject, type ProjectLocation } from "./paths.ts";
 import { ensureAgentStateDirs, readSecretsEnv, selectAgentEnv } from "./secrets.ts";
-import { resolveWorktreeTarget } from "./worktree.ts";
+import { containerWorkdir, resolveWorktreeTarget } from "./worktree.ts";
 
 const SANDBOX_PROJECTS_DIR = "/home/agent/projects";
 
@@ -44,7 +44,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   // runs from a second, per-project mount of the same host directory instead.
   const sandboxProjectRoot = `${SANDBOX_PROJECTS_DIR}/${target.sandboxName}`;
   spec.trustProject?.(agentDir, sandboxProjectRoot);
-  const workdir = project.subdir ? `${sandboxProjectRoot}/${project.subdir}` : sandboxProjectRoot;
+  const workdir = containerWorkdir(sandboxProjectRoot, target.hostRoot, project.subdir);
   const setup = spec.launchSetup ? `${spec.launchSetup} && ` : "";
   const argv = ["sh", "-c", `cd "$1" && shift && ${setup}exec "$@"`, "aos", workdir, spec.command, ...agentArgs];
 

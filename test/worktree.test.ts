@@ -8,6 +8,7 @@ import { AosError } from "../src/errors.ts";
 import { aosPaths, locateProject } from "../src/paths.ts";
 import {
   assertTreehouseInstalled,
+  containerWorkdir,
   deleteBranch,
   detectResumeIntent,
   extractExplicitSessionId,
@@ -340,5 +341,23 @@ describe("locateProject on an aos-style worktree", () => {
     const project = locateProject(worktree);
     assert.equal(project.root, worktree);
     assert.equal(project.subdir, "");
+  });
+});
+
+describe("containerWorkdir", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-worktree-workdir-")));
+  after(() => rmSync(base, { recursive: true, force: true }));
+
+  test("keeps the launch subdirectory when it exists in the mounted checkout", () => {
+    mkdirSync(join(base, "src", "lib"), { recursive: true });
+    assert.equal(containerWorkdir("/home/agent/projects/p", base, "src/lib"), "/home/agent/projects/p/src/lib");
+  });
+
+  test("falls back to the checkout root when the subdirectory is missing from the worktree", () => {
+    assert.equal(containerWorkdir("/home/agent/projects/p", base, "scratch"), "/home/agent/projects/p");
+  });
+
+  test("uses the checkout root for a launch from the repository root", () => {
+    assert.equal(containerWorkdir("/home/agent/projects/p", base, ""), "/home/agent/projects/p");
   });
 });

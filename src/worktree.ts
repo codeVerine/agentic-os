@@ -161,6 +161,18 @@ export async function resolveWorktreeTarget(
   }
 }
 
+/**
+ * The container directory the agent starts in: the launch directory's counterpart inside the
+ * mounted checkout, or its root when that subdirectory does not exist there (an untracked or
+ * ignored directory, or one newer than the worktree's commit).
+ */
+export function containerWorkdir(sandboxProjectRoot: string, hostRoot: string, subdir: string): string {
+  if (!subdir) return sandboxProjectRoot;
+  if (statSync(join(hostRoot, subdir), { throwIfNoEntry: false })?.isDirectory()) return `${sandboxProjectRoot}/${subdir}`;
+  console.error(`aos: ${subdir} does not exist in ${hostRoot}; starting the agent at the worktree root instead.`);
+  return sandboxProjectRoot;
+}
+
 /** Undoes a lease whose setup failed before it was registered, so the pool never leaks it. */
 function releaseUnregisteredLease(mainRoot: string, worktreePath: string, branch: string | undefined): void {
   const steps = branch
