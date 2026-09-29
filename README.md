@@ -121,12 +121,25 @@ own branch and its own files, without waiting on each other or on git status in 
   both steps for every worktree that already qualifies.
 - **Resume and continue land you back in the right worktree, automatically.** Claude's `--resume`/`-c`/
   `--continue`, Codex's `resume` subcommand, OpenCode's `-c`/`--session`, and Pi's `-c`/`-r`/`--session[-id]`
-  all scope their own session lookup to the directory the agent is running in. `aos` detects those flags and,
-  instead of leasing a new worktree, launches into the worktree your last `aos <agent>` (or resumed session)
-  used for that agent in this project — no separate `aos` session flag to remember or pass. If none exists
-  yet, `aos` says so and leases a new one, same as a plain launch; an explicit session id from an older,
-  non-current worktree is not searched for automatically — `cd` into that worktree (`aos worktree list`
-  prints its path) and run `aos <agent> --resume <id> --here` from inside it instead.
+  all scope their own session lookup to the directory the agent is running in, so `aos` detects those flags
+  and picks a worktree for you instead of leasing a new one — no separate `aos` session flag to remember or
+  pass:
+  - **An explicit session id** (`claude --resume <id>`, `codex resume <id>`, `opencode --session <id>`,
+    `pi --session <id>`/`--session-id <id>`) is looked up in that agent's own history under
+    `~/AgenticOS/secrets/<agent>/` on the host — the same place a launch mounts into the container — and
+    mapped back to whichever worktree it belongs to, however old. This works for Claude, Codex and Pi, whose
+    history is either indexed by session id on disk (Claude, Codex) or laid out one directory per worktree
+    the same way (Pi). **OpenCode keeps its sessions in a single SQLite database with no documented
+    per-session-id index**, so `aos` cannot map an explicit `--session <id>` to a worktree reliably; it falls
+    back to the most recently used OpenCode worktree instead and says so on stderr. If the id truly isn't the
+    most recent one, `cd` into the right worktree (`aos worktree list` prints its path) and run
+    `aos opencode --session <id> --here` from inside it.
+  - **A bare flag with no id** (`-c`/`--continue`, or `--resume`/`-r` with nothing after it) lands you in the
+    most recently used worktree for that agent in this project. A bare `--resume`/`-r` then opens that
+    agent's own picker, which — same as the id lookup above — only lists sessions that ran in that one
+    worktree, not every session you've ever had on this project.
+  - If neither finds an existing worktree for this project and agent, `aos` says so on stderr and leases a
+    new one, same as a plain launch.
 - **Container path.** Each worktree's container path (`/home/agent/projects/<name>-<hash>`) is hashed from
   its own `aos/` branch name, not from the worktree's host path. treehouse reuses the same host directory for
   later, unrelated leases once one is returned, and since the container path is what keys Claude, Codex,

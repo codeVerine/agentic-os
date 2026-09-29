@@ -37,7 +37,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
 
   const target = here
     ? { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined }
-    : await resolveWorktreeTarget(spec.name, agentArgs, project, paths);
+    : await resolveWorktreeTarget(spec.name, agentArgs, project, paths, agentDir);
 
   // Sandcastle bind-mounts every project at the same /home/agent/workspace.
   // Agents key transcripts, trust and memory by working directory, so the agent
