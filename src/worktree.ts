@@ -46,13 +46,11 @@ export function treehouseVersion(cmd: string = TREEHOUSE_CMD): string | undefine
 }
 
 export function assertTreehouseInstalled(agentName: string, cmd: string = TREEHOUSE_CMD): void {
-  const result = spawnSync(cmd, ["--version"], { encoding: "utf8" });
-  if (result.error) {
-    throw new AosError(
-      `aos needs the treehouse CLI to give "aos ${agentName}" its own worktree (https://github.com/kunchenguid/treehouse). ` +
-        `Install it and make sure "${cmd}" is on PATH, or run "aos ${agentName} --here" to run in this repository directly instead.`,
-    );
-  }
+  if (treehouseVersion(cmd) !== undefined) return;
+  throw new AosError(
+    `aos needs the treehouse CLI to give "aos ${agentName}" its own worktree (https://github.com/kunchenguid/treehouse). ` +
+      `Install it and make sure "${cmd}" is on PATH, or run "aos ${agentName} --here" to run in this repository directly instead.`,
+  );
 }
 
 /**
