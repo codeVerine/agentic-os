@@ -235,6 +235,27 @@ describe("aos worktree rm/prune with a still-running agent", () => {
     assert.equal(await worktreeCommand(["rm", removed.id], r.main, r.paths), 0);
     assert.equal(readRegistry(r.paths, r.key).length, 0);
   });
+
+  test("where ps cannot report a start time, a live holder still keeps rm and prune off the worktree", async () => {
+    const fakeBin = join(base, "no-lstart-bin");
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(join(fakeBin, "ps"), "#!/bin/sh\necho 'ps: unknown option' >&2\nexit 1\n");
+    chmodSync(join(fakeBin, "ps"), 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:${originalPath}`;
+    try {
+      const r = repo("no-lstart");
+      const record = branchWorktree(r, "no-lstart-1");
+      await seed(r, record);
+      heldByThisProcess(record);
+
+      assert.equal(await worktreeCommand(["prune"], r.main, r.paths), 0);
+      assert.equal(readRegistry(r.paths, r.key).length, 1);
+      await assert.rejects(worktreeCommand(["rm", record.id], r.main, r.paths), /still in use by running aos process/);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
 });
 
 describe("resolveWorktreeTarget", () => {
