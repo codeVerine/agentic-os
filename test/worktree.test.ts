@@ -1,0 +1,223 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, describe, test } from "node:test";
+import { AosError } from "../src/errors.ts";
+import { aosPaths, locateProject } from "../src/paths.ts";
+import {
+  assertTreehouseInstalled,
+  deleteBranch,
+  detectResumeIntent,
+  isMergedInto,
+  isWorktreeClean,
+  mergeLocally,
+  mostRecentlyUsed,
+  projectKey,
+  readRegistry,
+  withRegistryLock,
+  type WorktreeRecord,
+} from "../src/worktree.ts";
+
+describe("detectResumeIntent", () => {
+  test("claude: --resume and -c/--continue, not a plain launch", () => {
+    assert.equal(detectResumeIntent("claude", ["--resume"]), true);
+    assert.equal(detectResumeIntent("claude", ["--resume", "abc-123"]), true);
+    assert.equal(detectResumeIntent("claude", ["-c"]), true);
+    assert.equal(detectResumeIntent("claude", ["--continue"]), true);
+    assert.equal(detectResumeIntent("claude", ["--model", "opus"]), false);
+    assert.equal(detectResumeIntent("claude", []), false);
+  });
+
+  test("codex: the resume subcommand only, not exec or other subcommands", () => {
+    assert.equal(detectResumeIntent("codex", ["resume"]), true);
+    assert.equal(detectResumeIntent("codex", ["resume", "abc-123", "--last"]), true);
+    assert.equal(detectResumeIntent("codex", ["exec", "resume"]), false);
+    assert.equal(detectResumeIntent("codex", ["--model", "o3"]), false);
+  });
+
+  test("opencode: -c/--continue and -s/--session", () => {
+    assert.equal(detectResumeIntent("opencode", ["-c"]), true);
+    assert.equal(detectResumeIntent("opencode", ["--continue"]), true);
+    assert.equal(detectResumeIntent("opencode", ["-s", "abc"]), true);
+    assert.equal(detectResumeIntent("opencode", ["--session", "abc"]), true);
+    assert.equal(detectResumeIntent("opencode", ["--model", "gpt"]), false);
+  });
+
+  test("pi: -c/--continue, -r/--resume, --session and --session-id", () => {
+    assert.equal(detectResumeIntent("pi", ["-c"]), true);
+    assert.equal(detectResumeIntent("pi", ["-r"]), true);
+    assert.equal(detectResumeIntent("pi", ["--resume"]), true);
+    assert.equal(detectResumeIntent("pi", ["--session", "abc"]), true);
+    assert.equal(detectResumeIntent("pi", ["--session-id", "abc"]), true);
+    assert.equal(detectResumeIntent("pi", ["--thinking", "high"]), false);
+  });
+});
+
+describe("assertTreehouseInstalled", () => {
+  test("throws naming the install source and the --here escape hatch when the binary is missing", () => {
+    assert.throws(
+      () => assertTreehouseInstalled("claude", "aos-test-definitely-not-a-real-binary"),
+      (error) =>
+        error instanceof AosError &&
+        error.message.includes("github.com/kunchenguid/treehouse") &&
+        error.message.includes("aos claude --here"),
+    );
+  });
+});
+
+describe("mostRecentlyUsed", () => {
+  const record = (agent: "claude" | "codex", lastUsedAt: string): WorktreeRecord => ({
+    id: lastUsedAt,
+    agent,
+    branch: `aos/${agent}/${lastUsedAt}`,
+    worktreePath: `/tmp/${lastUsedAt}`,
+    sandboxName: `x-${lastUsedAt}`,
+    baseRev: "abc",
+    createdAt: lastUsedAt,
+    lastUsedAt,
+    leaseId: "lease",
+  });
+
+  test("picks the newest record for the given agent, ignoring other agents", () => {
+    const records = [record("claude", "2026-01-01T00:00:00Z"), record("codex", "2026-01-03T00:00:00Z"), record("claude", "2026-01-02T00:00:00Z")];
+    assert.equal(mostRecentlyUsed(records, "claude")?.id, "2026-01-02T00:00:00Z");
+    assert.equal(mostRecentlyUsed(records, "codex")?.id, "2026-01-03T00:00:00Z");
+    assert.equal(mostRecentlyUsed(records, "opencode"), undefined);
+  });
+});
+
+describe("projectKey and the registry", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-worktree-")));
+  after(() => rmSync(base, { recursive: true, force: true }));
+
+  function repo(name: string): string {
+    const dir = join(base, name);
+    mkdirSync(dir);
+    execFileSync("git", ["init", "--quiet", dir]);
+    execFileSync("git", ["-C", dir, "commit", "--quiet", "--allow-empty", "-m", "init"]);
+    return dir;
+  }
+
+  test("is the same from the main checkout and a linked worktree, different across repos", () => {
+    const main = repo("proj-a");
+    const worktree = join(base, "proj-a-wt");
+    execFileSync("git", ["-C", main, "worktree", "add", "--quiet", "-b", "feature", worktree]);
+    const other = repo("proj-b");
+    assert.equal(projectKey(main), projectKey(worktree));
+    assert.notEqual(projectKey(main), projectKey(other));
+  });
+
+  test("readRegistry returns an empty array when no file exists yet, and rejects invalid JSON", () => {
+    const paths = aosPaths(join(base, "aos-root-empty"));
+    assert.deepEqual(readRegistry(paths, "missing-key"), []);
+
+    const paths2 = aosPaths(join(base, "aos-root-bad"));
+    mkdirSync(paths2.worktrees, { recursive: true });
+    writeFileSync(join(paths2.worktrees, "bad.json"), "{not json", "utf8");
+    assert.throws(() => readRegistry(paths2, "bad"), (error) => error instanceof AosError && /not valid JSON/.test(error.message));
+  });
+
+  test("withRegistryLock persists writes across separate calls and serializes concurrent updates", async () => {
+    const paths = aosPaths(join(base, "aos-root-lock"));
+    const key = "proj";
+    const seed = (id: string): WorktreeRecord => ({
+      id,
+      agent: "claude",
+      branch: `aos/claude/${id}`,
+      worktreePath: `/tmp/${id}`,
+      sandboxName: `x-${id}`,
+      baseRev: "abc",
+      createdAt: "now",
+      lastUsedAt: "now",
+      leaseId: "lease",
+    });
+
+    await Promise.all(
+      ["a", "b", "c", "d"].map((id) => withRegistryLock(paths, key, (records) => ({ records: [...records, seed(id)], value: undefined }))),
+    );
+
+    const records = readRegistry(paths, key);
+    assert.equal(records.length, 4);
+    assert.deepEqual(
+      records.map((r) => r.id).sort(),
+      ["a", "b", "c", "d"],
+    );
+  });
+});
+
+describe("git-backed safety checks", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-worktree-git-")));
+  after(() => rmSync(base, { recursive: true, force: true }));
+
+  function setup(name: string): { main: string; worktree: string; branch: string } {
+    const main = join(base, name);
+    mkdirSync(main);
+    execFileSync("git", ["init", "--quiet", main]);
+    execFileSync("git", ["-C", main, "commit", "--quiet", "--allow-empty", "-m", "init"]);
+    const branch = `aos/claude/${name}`;
+    const worktree = join(base, `${name}-wt`);
+    execFileSync("git", ["-C", main, "worktree", "add", "--quiet", "-b", branch, worktree]);
+    return { main, worktree, branch };
+  }
+
+  test("isWorktreeClean reflects uncommitted changes", () => {
+    const { worktree } = setup("clean-check");
+    assert.equal(isWorktreeClean(worktree), true);
+    writeFileSync(join(worktree, "file.txt"), "hi");
+    assert.equal(isWorktreeClean(worktree), false);
+  });
+
+  test("isMergedInto is false until the branch's commits reach the main checkout's HEAD", () => {
+    const { main, worktree, branch } = setup("merge-check");
+    writeFileSync(join(worktree, "file.txt"), "hi");
+    execFileSync("git", ["-C", worktree, "add", "file.txt"]);
+    execFileSync("git", ["-C", worktree, "commit", "--quiet", "-m", "change"]);
+    assert.equal(isMergedInto(main, branch), false);
+    mergeLocally(main, branch);
+    assert.equal(isMergedInto(main, branch), true);
+  });
+
+  test("mergeLocally throws an AosError on conflict instead of leaving a half-done merge silently", () => {
+    const { main, worktree, branch } = setup("conflict-check");
+    writeFileSync(join(main, "file.txt"), "main version");
+    execFileSync("git", ["-C", main, "add", "file.txt"]);
+    execFileSync("git", ["-C", main, "commit", "--quiet", "-m", "main change"]);
+    writeFileSync(join(worktree, "file.txt"), "worktree version");
+    execFileSync("git", ["-C", worktree, "add", "file.txt"]);
+    execFileSync("git", ["-C", worktree, "commit", "--quiet", "-m", "worktree change"]);
+    assert.throws(() => mergeLocally(main, branch), AosError);
+    execFileSync("git", ["-C", main, "merge", "--abort"]);
+  });
+
+  test("deleteBranch refuses an unmerged branch without force, and -D removes it with force", () => {
+    const { main, worktree, branch } = setup("delete-check");
+    writeFileSync(join(worktree, "file.txt"), "hi");
+    execFileSync("git", ["-C", worktree, "add", "file.txt"]);
+    execFileSync("git", ["-C", worktree, "commit", "--quiet", "-m", "change"]);
+    execFileSync("git", ["-C", main, "worktree", "remove", "--force", worktree]);
+    assert.throws(() => deleteBranch(main, branch, false), AosError);
+    deleteBranch(main, branch, true);
+    const branches = execFileSync("git", ["-C", main, "branch", "--list", branch], { encoding: "utf8" });
+    assert.equal(branches.trim(), "");
+  });
+});
+
+describe("locateProject on an aos-style worktree", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-worktree-locate-")));
+  after(() => rmSync(base, { recursive: true, force: true }));
+
+  test("a freshly leased-and-branched worktree resolves like any other linked worktree", () => {
+    const main = join(base, "repo");
+    mkdirSync(main);
+    execFileSync("git", ["init", "--quiet", main]);
+    execFileSync("git", ["-C", main, "commit", "--quiet", "--allow-empty", "-m", "init"]);
+    const worktree = join(base, "repo-leased");
+    execFileSync("git", ["-C", main, "worktree", "add", "--quiet", "--detach", worktree]);
+    execFileSync("git", ["-C", worktree, "checkout", "-q", "-b", "aos/claude/test-id"]);
+    const project = locateProject(worktree);
+    assert.equal(project.root, worktree);
+    assert.equal(project.subdir, "");
+  });
+});

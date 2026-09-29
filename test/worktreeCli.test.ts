@@ -1,0 +1,140 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, describe, test } from "node:test";
+import { aosPaths } from "../src/paths.ts";
+import type { WorktreeRecord } from "../src/worktree.ts";
+
+// worktreeCommand's "rm" and "prune" call `treehouse return` on success. A fake, always-succeeding
+// treehouse binary lets these tests exercise that path without the real CLI installed. The env var
+// must be set before worktree.ts is first evaluated, so it is imported dynamically below.
+const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-worktree-cli-")));
+after(() => rmSync(base, { recursive: true, force: true }));
+
+const fakeTreehouse = join(base, "fake-treehouse");
+writeFileSync(fakeTreehouse, "#!/bin/sh\nexit 0\n");
+chmodSync(fakeTreehouse, 0o755);
+process.env.AOS_TREEHOUSE_CMD = fakeTreehouse;
+
+const { projectKey, withRegistryLock, readRegistry } = await import("../src/worktree.ts");
+const { worktreeCommand } = await import("../src/worktreeCli.ts");
+
+interface Repo {
+  readonly main: string;
+  readonly paths: ReturnType<typeof aosPaths>;
+  readonly key: string;
+}
+
+function repo(name: string): Repo {
+  const main = join(base, name);
+  mkdirSync(main);
+  execFileSync("git", ["init", "--quiet", main]);
+  execFileSync("git", ["-C", main, "config", "user.email", "aos@example.com"]);
+  execFileSync("git", ["-C", main, "config", "user.name", "aos"]);
+  execFileSync("git", ["-C", main, "commit", "--quiet", "--allow-empty", "-m", "init"]);
+  const paths = aosPaths(join(base, `${name}-root`));
+  return { main, paths, key: projectKey(main) };
+}
+
+function branchWorktree(repoInfo: Repo, id: string): WorktreeRecord {
+  const branch = `aos/claude/${id}`;
+  const worktreePath = join(base, `wt-${id}`);
+  execFileSync("git", ["-C", repoInfo.main, "worktree", "add", "--quiet", "-b", branch, worktreePath]);
+  return {
+    id,
+    agent: "claude",
+    branch,
+    worktreePath,
+    sandboxName: `x-${id}`,
+    baseRev: execFileSync("git", ["-C", repoInfo.main, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+    createdAt: new Date().toISOString(),
+    lastUsedAt: new Date().toISOString(),
+    leaseId: "fake-lease",
+  };
+}
+
+async function seed(repoInfo: Repo, record: WorktreeRecord): Promise<void> {
+  await withRegistryLock(repoInfo.paths, repoInfo.key, (records) => ({ records: [...records, record], value: undefined }));
+}
+
+describe("aos worktree list/merge/rm/prune", () => {
+  test("list prints without throwing for an empty and a populated registry", async () => {
+    const r = repo("list-empty");
+    assert.equal(await worktreeCommand(["list"], r.main, r.paths), 0);
+
+    const record = branchWorktree(r, "list-1");
+    await seed(r, record);
+    assert.equal(await worktreeCommand(["list"], r.main, r.paths), 0);
+  });
+
+  test("merge lands the branch's commits on the current branch, without touching the registry", async () => {
+    const r = repo("merge");
+    const record = branchWorktree(r, "merge-1");
+    await seed(r, record);
+    writeFileSync(join(record.worktreePath, "file.txt"), "agent change");
+    execFileSync("git", ["-C", record.worktreePath, "add", "file.txt"]);
+    execFileSync("git", ["-C", record.worktreePath, "commit", "--quiet", "-m", "agent change"]);
+
+    assert.equal(await worktreeCommand(["merge", record.id], r.main, r.paths), 0);
+    assert.ok(execFileSync("git", ["-C", r.main, "log", "--oneline"], { encoding: "utf8" }).includes("agent change"));
+    assert.equal(readRegistry(r.paths, r.key).length, 1);
+  });
+
+  test("merge refuses an unknown id", async () => {
+    const r = repo("merge-unknown");
+    await assert.rejects(worktreeCommand(["merge", "does-not-exist"], r.main, r.paths), /No aos worktree/);
+  });
+
+  test("rm refuses uncommitted work without --force, and removes it with --force", async () => {
+    const r = repo("rm-dirty");
+    const record = branchWorktree(r, "rm-dirty-1");
+    await seed(r, record);
+    writeFileSync(join(record.worktreePath, "file.txt"), "uncommitted");
+
+    await assert.rejects(worktreeCommand(["rm", record.id], r.main, r.paths), /uncommitted changes/);
+    assert.equal(readRegistry(r.paths, r.key).length, 1);
+
+    assert.equal(await worktreeCommand(["rm", record.id, "--force"], r.main, r.paths), 0);
+    assert.equal(readRegistry(r.paths, r.key).length, 0);
+  });
+
+  test("rm refuses unmerged work without --force, and succeeds once merged", async () => {
+    const r = repo("rm-unmerged");
+    const record = branchWorktree(r, "rm-unmerged-1");
+    await seed(r, record);
+    writeFileSync(join(record.worktreePath, "file.txt"), "agent change");
+    execFileSync("git", ["-C", record.worktreePath, "add", "file.txt"]);
+    execFileSync("git", ["-C", record.worktreePath, "commit", "--quiet", "-m", "agent change"]);
+
+    await assert.rejects(worktreeCommand(["rm", record.id], r.main, r.paths), /not merged/);
+
+    await worktreeCommand(["merge", record.id], r.main, r.paths);
+    assert.equal(await worktreeCommand(["rm", record.id], r.main, r.paths), 0);
+    assert.equal(readRegistry(r.paths, r.key).length, 0);
+    const branches = execFileSync("git", ["-C", r.main, "branch", "--list", record.branch], { encoding: "utf8" });
+    assert.equal(branches.trim(), "");
+  });
+
+  test("prune removes merged-and-clean worktrees, keeps unmerged ones, and drops entries missing from disk", async () => {
+    const r = repo("prune");
+    const mergedClean = branchWorktree(r, "prune-clean");
+    await seed(r, mergedClean);
+    const unmerged = branchWorktree(r, "prune-unmerged");
+    await seed(r, unmerged);
+    writeFileSync(join(unmerged.worktreePath, "file.txt"), "agent change");
+    execFileSync("git", ["-C", unmerged.worktreePath, "add", "file.txt"]);
+    execFileSync("git", ["-C", unmerged.worktreePath, "commit", "--quiet", "-m", "agent change"]);
+    const gone: WorktreeRecord = { ...branchWorktree(r, "prune-gone-src"), worktreePath: join(base, "does-not-exist") };
+    await seed(r, gone);
+
+    assert.equal(await worktreeCommand(["prune"], r.main, r.paths), 0);
+
+    const remaining = readRegistry(r.paths, r.key);
+    assert.deepEqual(
+      remaining.map((rec) => rec.id),
+      [unmerged.id],
+    );
+  });
+});

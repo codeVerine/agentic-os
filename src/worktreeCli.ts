@@ -4,6 +4,7 @@ import { locateProject } from "./paths.ts";
 import type { AosPaths } from "./paths.ts";
 import {
   deleteBranch,
+  detachWorktree,
   isMergedInto,
   isWorktreeClean,
   mergeLocally,
@@ -127,7 +128,10 @@ function removeOne(mainRoot: string, record: WorktreeRecord, force: boolean): vo
       throw new AosError(`${record.branch} is not merged into the branch checked out in ${mainRoot}. Run "aos worktree merge ${record.id}" first, or use --force.`);
     }
   }
-  if (existsSync(record.worktreePath)) returnWorktree(record.worktreePath);
+  if (existsSync(record.worktreePath)) {
+    detachWorktree(record.worktreePath);
+    returnWorktree(record.worktreePath);
+  }
   try {
     deleteBranch(mainRoot, record.branch, force);
   } catch (error) {

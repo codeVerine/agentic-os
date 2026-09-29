@@ -39,12 +39,12 @@ export interface WorktreeTarget {
 
 const STALE_LOCK_MS = 10_000;
 
-export function assertTreehouseInstalled(agentName: string): void {
-  const result = spawnSync(TREEHOUSE_CMD, ["--version"], { encoding: "utf8" });
+export function assertTreehouseInstalled(agentName: string, cmd: string = TREEHOUSE_CMD): void {
+  const result = spawnSync(cmd, ["--version"], { encoding: "utf8" });
   if (result.error) {
     throw new AosError(
       `aos needs the treehouse CLI to give "aos ${agentName}" its own worktree (https://github.com/kunchenguid/treehouse). ` +
-        `Install it and make sure "${TREEHOUSE_CMD}" is on PATH, or run "aos ${agentName} --here" to run in this repository directly instead.`,
+        `Install it and make sure "${cmd}" is on PATH, or run "aos ${agentName} --here" to run in this repository directly instead.`,
     );
   }
 }
@@ -151,6 +151,17 @@ function leaseWorktree(cwd: string, holder: string): { path: string; leaseId: st
     throw new AosError(`treehouse get --lease did not return a worktree path and lease id: ${result.stdout.trim()}`);
   }
   return { path: parsed.path, leaseId: parsed.lease_id };
+}
+
+/**
+ * `treehouse return` releases the lease but leaves the worktree checked out on its branch, so
+ * deleting that branch afterward would fail with "used by worktree". Detaching first (always
+ * possible: the target tree is the current commit, so it never conflicts with local changes)
+ * frees the branch name for `deleteBranch` while leaving everything else in the worktree alone.
+ */
+export function detachWorktree(worktreePath: string): void {
+  const result = spawnSync("git", ["-C", worktreePath, "checkout", "-q", "--detach"], { encoding: "utf8" });
+  if (result.status !== 0) throw new AosError(`Could not detach ${worktreePath} from its branch: ${result.stderr.trim()}`);
 }
 
 export function returnWorktree(worktreePath: string): void {
