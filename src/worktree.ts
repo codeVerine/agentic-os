@@ -39,6 +39,12 @@ export interface WorktreeTarget {
 
 const STALE_LOCK_MS = 10_000;
 
+/** treehouse's own version string, or undefined when it is not on PATH. For `aos doctor`. */
+export function treehouseVersion(cmd: string = TREEHOUSE_CMD): string | undefined {
+  const result = spawnSync(cmd, ["--version"], { encoding: "utf8" });
+  return result.error ? undefined : result.stdout.trim();
+}
+
 export function assertTreehouseInstalled(agentName: string, cmd: string = TREEHOUSE_CMD): void {
   const result = spawnSync(cmd, ["--version"], { encoding: "utf8" });
   if (result.error) {
