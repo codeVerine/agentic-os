@@ -169,6 +169,25 @@ describe("aos worktree list/merge/rm/prune", () => {
     );
   });
 
+  test("rm and prune run from inside an aos worktree check merges against the main checkout", async () => {
+    const r = repo("from-worktree");
+    const record = branchWorktree(r, "from-wt-1");
+    await seed(r, record);
+    writeFileSync(join(record.worktreePath, "file.txt"), "agent change");
+    execFileSync("git", ["-C", record.worktreePath, "add", "file.txt"]);
+    execFileSync("git", ["-C", record.worktreePath, "commit", "--quiet", "-m", "agent change"]);
+
+    await assert.rejects(worktreeCommand(["rm", record.id], record.worktreePath, r.paths), /not merged/);
+    assert.equal(await worktreeCommand(["prune"], record.worktreePath, r.paths), 0);
+
+    assert.deepEqual(
+      readRegistry(r.paths, r.key).map((rec) => rec.id),
+      [record.id],
+    );
+    const branchHead = execFileSync("git", ["-C", record.worktreePath, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" });
+    assert.equal(branchHead.trim(), record.branch);
+  });
+
   test("prune drops the records it did release and keeps the one whose treehouse return failed", async () => {
     const r = repo("prune-partial");
     const failing = branchWorktree(r, "fail-return-1");

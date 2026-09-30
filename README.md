@@ -100,7 +100,7 @@ aos opencode --help
 | `aos claude --here` / etc. `[args]` | Opens the agent's interactive interface in the current directory, no worktree. |
 | `aos worktree list` | Lists this project's aos-leased worktrees: id, agent, lease state, branch, clean/dirty, merged/unmerged. |
 | `aos worktree merge <id>` | Merges that worktree's branch into the branch checked out where you run the command, locally. |
-| `aos worktree rm <id> [--force]` | Returns the lease and deletes the branch. Refuses while an `aos` process is still running an agent in it, or on uncommitted changes or an unmerged branch, unless `--force`. |
+| `aos worktree rm <id> [--force]` | Returns the lease and deletes the branch. Refuses while an `aos` process is still running an agent in it, or on uncommitted changes or a branch not yet merged into the main checkout's current branch, unless `--force`. Run from the main checkout or any of its worktrees, it checks against the main checkout. |
 | `aos worktree prune` | Runs the same removal as `rm`, without `--force`, on every worktree that is already merged and clean, skipping any an `aos` process is still running an agent in. |
 
 ## Worktrees

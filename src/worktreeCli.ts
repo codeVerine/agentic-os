@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { basename } from "node:path";
 import { AosError } from "./errors.ts";
 import { locateProject } from "./paths.ts";
 import type { AosPaths } from "./paths.ts";
@@ -8,6 +9,7 @@ import {
   isMergedInto,
   isWorktreeClean,
   liveHolderPid,
+  mainCheckout,
   mergeLocally,
   projectKey,
   readRegistry,
@@ -55,20 +57,24 @@ function findRecord(records: readonly WorktreeRecord[], id: string): WorktreeRec
   return record;
 }
 
+function locateMainCheckout(cwd: string): { mainRoot: string; key: string } {
+  const mainRoot = mainCheckout(locateProject(cwd).root);
+  return { mainRoot, key: projectKey(mainRoot) };
+}
+
 function listWorktrees(cwd: string, paths: AosPaths): number {
-  const project = locateProject(cwd);
-  const key = projectKey(project.root);
+  const { mainRoot, key } = locateMainCheckout(cwd);
   const records = readRegistry(paths, key);
   if (records.length === 0) {
-    console.log(`No aos worktrees for ${project.name}.`);
+    console.log(`No aos worktrees for ${basename(mainRoot)}.`);
     return 0;
   }
-  const live = treehouseStatus(project.root);
+  const live = treehouseStatus(mainRoot);
   for (const record of records) {
     const gone = !existsSync(record.worktreePath);
     const leaseState = gone ? "gone" : (live?.find((e) => e.path === record.worktreePath)?.status ?? "unknown");
     const clean = !gone && isWorktreeClean(record.worktreePath);
-    const merged = !gone && isMergedInto(project.root, record.branch);
+    const merged = !gone && isMergedInto(mainRoot, record.branch);
     const flags = gone ? "" : ` (${clean ? "clean" : "dirty"}, ${merged ? "merged" : "unmerged"})`;
     console.log(`${record.id}  ${record.agent.padEnd(8)} ${leaseState.padEnd(9)} ${record.branch}${flags}`);
     console.log(`    ${record.worktreePath}`);
@@ -87,19 +93,17 @@ function mergeWorktree(id: string, cwd: string, paths: AosPaths): number {
 }
 
 async function removeWorktree(id: string, force: boolean, cwd: string, paths: AosPaths): Promise<number> {
-  const project = locateProject(cwd);
-  const key = projectKey(project.root);
+  const { mainRoot, key } = locateMainCheckout(cwd);
   const record = findRecord(readRegistry(paths, key), id);
-  removeOne(project.root, record, force, treehouseStatus(project.root));
+  removeOne(mainRoot, record, force, treehouseStatus(mainRoot));
   await dropRecords(paths, key, [record.id]);
   return 0;
 }
 
 async function pruneWorktrees(cwd: string, paths: AosPaths): Promise<number> {
-  const project = locateProject(cwd);
-  const key = projectKey(project.root);
+  const { mainRoot, key } = locateMainCheckout(cwd);
   const records = readRegistry(paths, key);
-  const status = treehouseStatus(project.root);
+  const status = treehouseStatus(mainRoot);
   const removedIds: string[] = [];
   let failed = 0;
   for (const record of records) {
@@ -108,14 +112,14 @@ async function pruneWorktrees(cwd: string, paths: AosPaths): Promise<number> {
       removedIds.push(record.id);
       continue;
     }
-    if (!isWorktreeClean(record.worktreePath) || !isMergedInto(project.root, record.branch)) continue;
+    if (!isWorktreeClean(record.worktreePath) || !isMergedInto(mainRoot, record.branch)) continue;
     const pid = liveHolderPid(record, status);
     if (pid !== undefined) {
       console.log(`aos: ${record.id} (${record.branch}) is still in use by running aos process ${pid}; skipping it.`);
       continue;
     }
     try {
-      removeOne(project.root, record, false, status);
+      removeOne(mainRoot, record, false, status);
       removedIds.push(record.id);
     } catch (error) {
       console.error(`aos: could not remove ${record.id}: ${(error as Error).message}`);

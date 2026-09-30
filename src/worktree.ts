@@ -413,6 +413,16 @@ export function git(dir: string, ...args: string[]): string {
   return result.stdout.trim();
 }
 
+/**
+ * The repository's main checkout, whichever of its worktrees `root` is. Merge checks, merges and branch
+ * deletes must run there: from inside an aos worktree, that worktree's own HEAD always contains its branch.
+ */
+export function mainCheckout(root: string): string {
+  const first = git(root, "worktree", "list", "--porcelain").split("\n")[0] ?? "";
+  if (!first.startsWith("worktree ")) throw new AosError(`Could not resolve the main checkout for ${root}.`);
+  return first.slice("worktree ".length);
+}
+
 /** Working tree has no uncommitted changes. */
 export function isWorktreeClean(worktreePath: string): boolean {
   const result = spawnSync("git", ["-C", worktreePath, "status", "--porcelain"], { encoding: "utf8" });
