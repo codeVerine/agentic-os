@@ -61,8 +61,9 @@ Set `AOS_ROOT` to use a directory other than `~/AgenticOS`.
 
 Run the launchers from any directory inside a git repository, wherever it lives; `AOS_ROOT/projects/` is
 only a convenient optional place for projects. The project is the git repository root of the directory you run
-`aos` in, and only that folder is mounted into the container. The agent starts in the same subdirectory you ran
-it from. The repository needs at least one commit (a Sandcastle requirement); a directory outside a git
+`aos` in. Only that folder is mounted into the container (or, without `--here`, only the worktree `aos` leased
+for it). The agent starts in the same subdirectory you ran it from, or at the worktree root when that
+subdirectory does not exist in the worktree, such as an untracked or ignored directory. The repository needs at least one commit (a Sandcastle requirement); a directory outside a git
 repository is refused and `aos` never runs `git init` for you.
 
 A linked worktree (`git worktree add`, including one `aos` itself leased from treehouse) works as the
@@ -122,11 +123,11 @@ own branch and its own files, without waiting on each other or on git status in 
 - **Resume and continue land you back in the right worktree, automatically.** Claude's `-r`/`--resume`/`-c`/
   `--continue`, Codex's `resume` subcommand, OpenCode's `-c`/`--session`, and Pi's `-c`/`-r`/`--session[-id]`
   all scope their own session lookup to the directory the agent is running in, so `aos` detects those flags
-  and picks a worktree for you instead of leasing a new one — no separate `aos` session flag to remember or
+  and picks a worktree for you instead of leasing a new one, so there is no separate `aos` session flag to remember or
   pass. Long flags are recognised in both `--flag value` and `--flag=value` form:
   - **An explicit session id** (`claude --resume <id>`, `codex resume <id>`, `opencode --session <id>`,
     `pi --session <id>`/`--session-id <id>`) is looked up in that agent's own history under
-    `~/AgenticOS/secrets/<agent>/` on the host — the same place a launch mounts into the container — and
+    `~/AgenticOS/secrets/<agent>/` on the host (the same place a launch mounts into the container) and
     mapped back to whichever worktree it belongs to, however old. A session that ran in the project's own
     checkout instead (started with `--here`, or before worktree support) resumes there, exactly as `--here`
     would, without leasing anything. This works for Claude, Codex and Pi, whose
@@ -138,7 +139,7 @@ own branch and its own files, without waiting on each other or on git status in 
     `aos opencode --session <id> --here` from inside it.
   - **A bare flag with no id** (`-c`/`--continue`, or `--resume`/`-r` with nothing after it) lands you in the
     most recently used worktree for that agent in this project. A bare `--resume`/`-r` then opens that
-    agent's own picker, which — same as the id lookup above — only lists sessions that ran in that one
+    agent's own picker, which (same as the id lookup above) only lists sessions that ran in that one
     worktree, not every session you've ever had on this project.
   - If neither finds an existing worktree for this project and agent, `aos` says so on stderr and leases a
     new one, same as a plain launch.
