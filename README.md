@@ -99,7 +99,7 @@ aos opencode --help
 | `aos claude` / `aos codex` / `aos opencode` / `aos pi` `[args]` | Leases a fresh worktree from the project's treehouse pool and opens the agent's interactive interface in it. See "Worktrees". |
 | `aos claude --here` / etc. `[args]` | Opens the agent's interactive interface in the current directory, no worktree. |
 | `aos worktree list` | Lists this project's aos-leased worktrees: id, agent, lease state, branch, clean/dirty, merged/unmerged. |
-| `aos worktree merge <id>` | Merges that worktree's branch into the branch checked out where you run the command, locally. |
+| `aos worktree merge <id>` | Merges that worktree's branch, locally, into the branch checked out in the project's main checkout, whichever of its worktrees you run the command from. |
 | `aos worktree rm <id> [--force]` | Returns the lease and deletes the branch. Refuses while an `aos` process is still running an agent in it, or on uncommitted changes or a branch not yet merged into the main checkout's current branch, unless `--force`. Run from the main checkout or any of its worktrees, it checks against the main checkout. |
 | `aos worktree prune` | Runs the same removal as `rm`, without `--force`, on every worktree that is already merged and clean, skipping any an `aos` process is still running an agent in. |
 
@@ -116,7 +116,7 @@ own branch and its own files, without waiting on each other or on git status in 
 - **The lease stays held.** Unlike a plain `treehouse get`, `aos` never returns the lease when the agent's
   session ends: the worktree and its branch are kept until you explicitly run `aos worktree rm` (or
   `prune`), so treehouse's own prune and destroy leave it alone in the meantime. Landing the work: run
-  `aos worktree merge <id>` from the branch you want it on (usually your main checkout), then
+  `aos worktree merge <id>` to merge it into the branch checked out in your main checkout, then
   `aos worktree rm <id>` to release the lease and delete the now-merged branch. `aos worktree prune` does
   both steps for every worktree that already qualifies.
 - **Resume and continue land you back in the right worktree, automatically.** Claude's `-r`/`--resume`/`-c`/

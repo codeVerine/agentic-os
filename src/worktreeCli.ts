@@ -23,7 +23,7 @@ import {
 const USAGE = `Usage: aos worktree <list|merge|rm|prune> [args]
 
   aos worktree list          List this project's aos-leased worktrees
-  aos worktree merge <id>    Merge a worktree's branch into the current branch here, locally
+  aos worktree merge <id>    Merge a worktree's branch into the main checkout's current branch, locally
   aos worktree rm <id>       Return the lease and delete the branch (refuses on unmerged or
                               uncommitted work; add --force to discard it)
   aos worktree prune         Remove every worktree already merged and clean`;
@@ -83,11 +83,10 @@ function listWorktrees(cwd: string, paths: AosPaths): number {
 }
 
 function mergeWorktree(id: string, cwd: string, paths: AosPaths): number {
-  const project = locateProject(cwd);
-  const key = projectKey(project.root);
+  const { mainRoot, key } = locateMainCheckout(cwd);
   const record = findRecord(readRegistry(paths, key), id);
-  mergeLocally(project.root, record.branch);
-  console.log(`aos: merged ${record.branch} into the branch checked out in ${project.root}.`);
+  mergeLocally(mainRoot, record.branch);
+  console.log(`aos: merged ${record.branch} into the branch checked out in ${mainRoot}.`);
   console.log(`aos: run "aos worktree rm ${record.id}" to release its worktree and delete the branch.`);
   return 0;
 }

@@ -113,6 +113,21 @@ describe("aos worktree list/merge/rm/prune", () => {
     assert.equal(readRegistry(r.paths, r.key).length, 1);
   });
 
+  test("merge run from inside the worktree itself lands the branch in the main checkout, and rm then succeeds", async () => {
+    const r = repo("merge-from-worktree");
+    const record = branchWorktree(r, "merge-wt-1");
+    await seed(r, record);
+    writeFileSync(join(record.worktreePath, "file.txt"), "agent change");
+    execFileSync("git", ["-C", record.worktreePath, "add", "file.txt"]);
+    execFileSync("git", ["-C", record.worktreePath, "commit", "--quiet", "-m", "agent change"]);
+
+    assert.equal(await worktreeCommand(["merge", record.id], record.worktreePath, r.paths), 0);
+    assert.ok(execFileSync("git", ["-C", r.main, "log", "--oneline"], { encoding: "utf8" }).includes("agent change"));
+
+    assert.equal(await worktreeCommand(["rm", record.id], record.worktreePath, r.paths), 0);
+    assert.equal(readRegistry(r.paths, r.key).length, 0);
+  });
+
   test("merge refuses an unknown id", async () => {
     const r = repo("merge-unknown");
     await assert.rejects(worktreeCommand(["merge", "does-not-exist"], r.main, r.paths), /No aos worktree/);
