@@ -19,8 +19,8 @@ export interface WorktreeRecord {
   readonly worktreePath: string;
   /** Container directory name this worktree's launches mount at, stable for the worktree's life. */
   readonly sandboxName: string;
-  /** Commit the branch was created from. */
-  readonly baseRev: string;
+  /** Commit the branch was created from; set by earlier aos versions, no longer written or read. */
+  readonly baseRev?: string;
   readonly createdAt: string;
   lastUsedAt: string;
   /** treehouse lease id, held from creation until `aos worktree rm`. */

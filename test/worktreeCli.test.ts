@@ -68,7 +68,6 @@ function branchWorktree(repoInfo: Repo, id: string): WorktreeRecord {
     branch,
     worktreePath,
     sandboxName: `x-${id}`,
-    baseRev: execFileSync("git", ["-C", repoInfo.main, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     createdAt: new Date().toISOString(),
     lastUsedAt: new Date().toISOString(),
     leaseId: "fake-lease",

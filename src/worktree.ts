@@ -85,7 +85,6 @@ export async function resolveWorktreeTarget(
       branch,
       worktreePath: lease.path,
       sandboxName: sandboxName(project.name, `${key}::${branch}`),
-      baseRev,
       createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
       leaseId: lease.leaseId,
