@@ -23,6 +23,11 @@ repository directly, the way earlier versions of `aos` always did. See "Worktree
 - The container sees the project, the project's `.git`, and that agent's own login directory from
   `~/AgenticOS/secrets/<agent>/`. It never sees the Mac's `~/.ssh`, `gh` login, `~/.claude`, `~/.codex`,
   OpenCode or Pi homes, and `aos` never reads them.
+- Each launch starts its own throwaway container and removes it when the session ends: on a normal exit, when
+  the agent exits non-zero, and on Ctrl-C, `SIGTERM` or a closed terminal (`SIGHUP`). `aos` finds the
+  container by a per-launch mount, so it never touches another session's container. A launch whose `aos`
+  process is killed with `SIGKILL`, or whose Mac loses power, cannot clean up and leaves its container
+  behind; `aos doctor --clean` removes the stopped ones (see "Commands").
 - Each agent logs in once, inside a container. That login is stored under `~/AgenticOS/secrets/<agent>/` and
   shared by every project, so the Mac's own agent logins are never touched, and a token refreshed in a
   container never logs the Mac's own tools out.
@@ -94,7 +99,7 @@ aos opencode --help
 | Command | What it does |
 | --- | --- |
 | `aos init` | Creates `AOS_ROOT` with an optional `projects/`, `secrets/` (0700), `secrets/env` (0600) and one login directory per agent. Safe to re-run; it resets the secrets permissions. |
-| `aos doctor` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, that `treehouse` is on `PATH`, and which agents have a saved login or keys. |
+| `aos doctor [--clean]` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, that `treehouse` is on `PATH`, and which agents have a saved login or keys. It also reports stopped `aos-dev` containers left behind by sessions that could not clean up after themselves (for example after a `SIGKILL`, or a Docker restart, which shows as `Exited (255)`), and `aos doctor --clean` removes them. It only touches stopped containers named `sandcastle-*` that were started from `aos-dev:local`, never a running session. |
 | `aos image build [docker build args]` | Builds `aos-dev:local` from `docker/Dockerfile` with `AGENT_UID`/`AGENT_GID` set to your Mac user, and labels it with a hash of `docker/`. Launches, logins and `aos doctor` refuse an image whose label does not match the installed aos, so rebuild after upgrading aos. |
 | `aos secrets login <agent> [args]` | Runs the agent's own login flow in a throwaway `aos-dev` container that mounts only that agent's login directory. Extra arguments go to the agent's login command. |
 | `aos claude` / `aos codex` / `aos opencode` / `aos pi` `[args]` | Leases a fresh worktree from the project's treehouse pool and opens the agent's interactive interface in it. See "Worktrees". |
