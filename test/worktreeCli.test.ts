@@ -341,6 +341,23 @@ describe("a worktree whose treehouse lease ended outside aos", () => {
     assert.equal(readRegistry(r.paths, r.key).length, 0);
   });
 
+  test("prune drops a merged record whose folder was reused and is dirty, and leaves the folder untouched", async () => {
+    const r = repo("stale-prune");
+    const record = branchWorktree(r, "stale-prune-1");
+    await seed(r, record);
+    writeFileSync(join(record.worktreePath, "other-session.txt"), "uncommitted work of the folder's new lease");
+    process.env.AOS_FAKE_STATUS = leasedTo(record, "someone-elses-lease");
+    const before = returnCalls();
+
+    assert.equal(await worktreeCommand(["prune"], r.main, r.paths), 0);
+
+    assert.equal(readRegistry(r.paths, r.key).length, 0);
+    assert.equal(returnCalls(), before);
+    assert.ok(existsSync(join(record.worktreePath, "other-session.txt")));
+    const head = execFileSync("git", ["-C", record.worktreePath, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" });
+    assert.equal(head.trim(), record.branch);
+  });
+
   test("treehouse's own lease check stops a return when the pool status could not say", async () => {
     const r = repo("stale-return");
     const record = branchWorktree(r, "stale-return-1");

@@ -58,10 +58,12 @@ function listWorktrees(cwd: string, paths: AosPaths): number {
   const live = treehouseStatus(mainRoot);
   for (const record of records) {
     const gone = !existsSync(record.worktreePath);
-    const leaseState = gone ? "gone" : (live?.find((e) => e.path === record.worktreePath)?.status ?? "unknown");
-    const clean = !gone && isWorktreeClean(record.worktreePath);
+    const ended = !gone && leaseEnded(record, live);
+    const leaseState = gone ? "gone" : ended ? "ended" : (live?.find((e) => e.path === record.worktreePath)?.status ?? "unknown");
     const merged = !gone && isMergedInto(mainRoot, record.branch);
-    const flags = gone ? "" : ` (${clean ? "clean" : "dirty"}, ${merged ? "merged" : "unmerged"})`;
+    const mergeFlag = merged ? "merged" : "unmerged";
+    // An ended lease's folder may belong to another session now, so its state says nothing about this record.
+    const flags = gone ? "" : ended ? ` (${mergeFlag})` : ` (${isWorktreeClean(record.worktreePath) ? "clean" : "dirty"}, ${mergeFlag})`;
     console.log(`${record.id}  ${record.agent.padEnd(8)} ${leaseState.padEnd(9)} ${record.branch}${flags}`);
     console.log(`    ${record.worktreePath}`);
   }
@@ -97,7 +99,8 @@ async function pruneWorktrees(cwd: string, paths: AosPaths): Promise<number> {
       removedIds.push(record.id);
       continue;
     }
-    if (!isWorktreeClean(record.worktreePath) || !isMergedInto(mainRoot, record.branch)) continue;
+    const ended = leaseEnded(record, status);
+    if ((!ended && !isWorktreeClean(record.worktreePath)) || !isMergedInto(mainRoot, record.branch)) continue;
     const pid = liveHolderPid(record, status);
     if (pid !== undefined) {
       console.log(`aos: ${record.id} (${record.branch}) is still in use by running aos process ${pid}; skipping it.`);
