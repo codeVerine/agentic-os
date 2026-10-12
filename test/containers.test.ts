@@ -20,8 +20,15 @@ writeFileSync(
 echo "$@" >> "${callLog}"
 case "$1" in
   ps) printf '%s' "$FAKE_DOCKER_PS" ;;
-  rm) shift; for arg in "$@"; do case "$arg" in -*) ;; *) echo "$arg" ;; esac; done
-    if [ -n "$FAKE_DOCKER_RM_ERROR" ]; then echo "$FAKE_DOCKER_RM_ERROR" >&2; exit 1; fi ;;
+  rm) shift; status=0
+    for arg in "$@"; do
+      case "$arg" in
+        -*) ;;
+        "$FAKE_DOCKER_RM_FAIL") echo "Error: No such container: $arg" >&2; status=1 ;;
+        *) echo "$arg" ;;
+      esac
+    done
+    exit $status ;;
 esac
 `,
 );
@@ -35,7 +42,7 @@ function calls(): string[] {
 beforeEach(() => {
   rmSync(callLog, { force: true });
   delete process.env.FAKE_DOCKER_PS;
-  delete process.env.FAKE_DOCKER_RM_ERROR;
+  delete process.env.FAKE_DOCKER_RM_FAIL;
 });
 
 describe("launchMarkerPath", () => {
@@ -74,9 +81,9 @@ describe("leftoverContainers", () => {
     assert.deepEqual(removeContainers([]), { removed: 0 });
   });
 
-  test("removeContainers surfaces docker's error when a removal fails", () => {
-    process.env.FAKE_DOCKER_RM_ERROR = "Error: No such container: exit02";
-    assert.deepEqual(removeContainers(["dead01", "exit02"]), { removed: 2, error: "Error: No such container: exit02" });
+  test("removeContainers counts only the removals docker confirms and surfaces its error", () => {
+    process.env.FAKE_DOCKER_RM_FAIL = "exit02";
+    assert.deepEqual(removeContainers(["dead01", "exit02"]), { removed: 1, error: "Error: No such container: exit02" });
   });
 });
 
