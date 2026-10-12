@@ -6,6 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { AgentName } from "./agents.ts";
 import { AosError } from "./errors.ts";
+import { spawnGit } from "./git.ts";
 import { assertGitMetadataMountable, gitCommonDir, sandboxName, type AosPaths, type ProjectLocation } from "./paths.ts";
 
 /** Command name for the treehouse CLI, overridable in tests. */
@@ -345,7 +346,7 @@ function leaseWorktree(cwd: string, holder: string): { path: string; leaseId: st
  * frees the branch name for `deleteBranch` while leaving everything else in the worktree alone.
  */
 export function detachWorktree(worktreePath: string): void {
-  const result = spawnSync("git", ["-C", worktreePath, "checkout", "-q", "--detach"], { encoding: "utf8" });
+  const result = spawnGit(["-C", worktreePath, "checkout", "-q", "--detach"]);
   if (result.status !== 0) throw new AosError(`Could not detach ${worktreePath} from its branch: ${result.stderr.trim()}`);
 }
 
@@ -403,12 +404,12 @@ function startedBy(pid: number, recordedAt: string): boolean {
 }
 
 function checkoutNewBranch(worktreePath: string, branch: string, baseRev: string): void {
-  const result = spawnSync("git", ["-C", worktreePath, "checkout", "-q", "-b", branch, baseRev], { encoding: "utf8" });
+  const result = spawnGit(["-C", worktreePath, "checkout", "-q", "-b", branch, baseRev]);
   if (result.status !== 0) throw new AosError(`Could not create branch ${branch} in ${worktreePath}: ${result.stderr.trim()}`);
 }
 
 export function git(dir: string, ...args: string[]): string {
-  const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+  const result = spawnGit(["-C", dir, ...args]);
   if (result.status !== 0) throw new AosError(`git ${args.join(" ")} failed in ${dir}: ${result.stderr.trim()}`);
   return result.stdout.trim();
 }
@@ -425,23 +426,23 @@ export function mainCheckout(root: string): string {
 
 /** Working tree has no uncommitted changes. */
 export function isWorktreeClean(worktreePath: string): boolean {
-  const result = spawnSync("git", ["-C", worktreePath, "status", "--porcelain"], { encoding: "utf8" });
+  const result = spawnGit(["-C", worktreePath, "status", "--porcelain"]);
   return result.status === 0 && result.stdout.trim() === "";
 }
 
 /** `branch`'s tip is already an ancestor of `into`'s current HEAD. */
 export function isMergedInto(into: string, branch: string): boolean {
-  const result = spawnSync("git", ["-C", into, "merge-base", "--is-ancestor", branch, "HEAD"], { encoding: "utf8" });
+  const result = spawnGit(["-C", into, "merge-base", "--is-ancestor", branch, "HEAD"]);
   return result.status === 0;
 }
 
 export function mergeLocally(mainRoot: string, branch: string): void {
-  const result = spawnSync("git", ["-C", mainRoot, "merge", "--no-edit", branch], { encoding: "utf8" });
+  const result = spawnGit(["-C", mainRoot, "merge", "--no-edit", branch]);
   if (result.status !== 0) throw new AosError(`git merge ${branch} failed in ${mainRoot}: ${(result.stderr || result.stdout).trim()}`);
 }
 
 export function deleteBranch(mainRoot: string, branch: string, force: boolean): void {
-  const result = spawnSync("git", ["-C", mainRoot, "branch", force ? "-D" : "-d", branch], { encoding: "utf8" });
+  const result = spawnGit(["-C", mainRoot, "branch", force ? "-D" : "-d", branch]);
   if (result.status !== 0) throw new AosError(`git branch ${force ? "-D" : "-d"} ${branch} failed: ${result.stderr.trim()}`);
 }
 

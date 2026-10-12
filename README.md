@@ -155,10 +155,11 @@ own branch and its own files, without waiting on each other or on git status in 
   lives and how large it grows; `aos` does not manage that file. Without one, treehouse uses its own
   defaults.
 - **Out of scope.** `aos` does not open a PR, push anywhere, or touch the repository's remote; "merge" is a
-  local `git merge`, same as you'd run by hand. It also does not add any git-tampering protection beyond
-  what already existed for `--here` (see "Warning: host git in agent-written projects"); worktrees narrow
-  the blast radius of a bad edit to their own branch, but a leased worktree's `.git` is still the project's
-  real, shared one.
+  local `git merge`, same as you'd run by hand, and every host git call `aos worktree merge/rm/prune` makes
+  runs with the same hook and fsmonitor protection described in "Warning: host git in agent-written
+  projects" below. Worktrees narrow the blast radius of a bad edit to their own branch, but a leased
+  worktree's `.git` is still the project's real, shared one, and `aos` adds no other git-tampering
+  protection beyond that.
 
 ## Subscriptions and API keys
 
@@ -276,7 +277,8 @@ API keys passed to it, and write anything in the project. See "Deliberately skip
 ## Warning: host git in agent-written projects
 
 Agents can write anything into a project, including `.git/config`, `.git/hooks/*` and files that git runs
-filters or an fsmonitor on. `aos` itself runs git on the Mac for Sandcastle with
+filters or an fsmonitor on. Every host git call `aos` itself makes, for Sandcastle and for its own worktree
+commands (`aos worktree merge/rm/prune`, and branch setup on a fresh worktree), runs with
 `core.hooksPath=/dev/null` and `core.fsmonitor=false`, but your own git commands, editor integrations and
 tools such as `gh` or `pre-commit` do not.
 

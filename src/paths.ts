@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AosError } from "./errors.ts";
+import { spawnGit } from "./git.ts";
 
 export interface AosPaths {
   readonly root: string;
@@ -132,7 +132,7 @@ function gitRoot(dir: string): string {
 }
 
 function git(dir: string, ...args: string[]): string {
-  const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+  const result = spawnGit(["-C", dir, ...args]);
   return result.status === 0 ? result.stdout.trim() : "";
 }
 
