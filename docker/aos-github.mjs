@@ -3,8 +3,7 @@
 // with a token for the one repository this session may use (src/github.ts).
 //
 //   aos-github.mjs credential <get|store|erase>   git credential helper
-//   aos-github.mjs token [owner/name]             prints a token, used by the gh wrapper
-import { execFileSync } from "node:child_process";
+//   aos-github.mjs token                          prints a token, used by the gh wrapper
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,15 +39,6 @@ async function request(path) {
   return { ok: false, message: "aos on the Mac did not answer in time. Is the aos session still running?" };
 }
 
-function originPath() {
-  try {
-    const url = execFileSync("git", ["remote", "get-url", "origin"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    return /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?\s*$/i.exec(url)?.[1];
-  } catch {
-    return undefined;
-  }
-}
-
 async function readStdin() {
   let input = "";
   for await (const chunk of process.stdin) input += chunk;
@@ -81,13 +71,13 @@ if (command === "credential") {
     fail(status);
     process.exit(1);
   }
-  const response = await request(process.argv[3] ?? originPath());
+  const response = await request();
   if (!response.ok) {
     fail(response.message);
     process.exit(1);
   }
   process.stdout.write(`${response.token}\n`);
 } else {
-  fail("usage: aos-github.mjs credential <get|store|erase> | token [owner/name]");
+  fail("usage: aos-github.mjs credential <get|store|erase> | token");
   process.exit(2);
 }

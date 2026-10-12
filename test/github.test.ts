@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { createPublicKey, createVerify, generateKeyPairSync, type KeyObject } from "node:crypto";
+import { createVerify, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -81,7 +81,7 @@ async function startFakeGithub(): Promise<FakeGithub> {
       method: request.method ?? "",
       path,
       body: await body(request),
-      jwt: decodeJwt(request.headers.authorization, createPublicKey(publicKey)),
+      jwt: decodeJwt(request.headers.authorization, publicKey),
     };
     calls.push(call);
     const send = (status: number, payload: unknown): void => {
@@ -301,11 +301,13 @@ describe("container credential helper", () => {
 
   test("an App that is not installed produces a message and no credential", async () => {
     const missing = gitRepo("missing-repo", "https://github.com/acme/missing.git");
-    const { access, spool } = session(fake, missing, join(base, "tokens-missing"));
+    const notes: string[] = [];
+    const { access, spool } = session(fake, missing, join(base, "tokens-missing"), (note) => notes.push(note));
     try {
       const result = await runHelper(["credential", "get"], { AOS_GITHUB_SPOOL: spool }, credentialInput("acme/missing.git"));
       assert.equal(result.stdout, "");
-      assert.match(result.stderr, /not installed on acme\/missing/);
+      assert.match(result.stderr, /could not get a GitHub token for acme\/missing/);
+      assert.ok(notes.some((note) => /not installed on acme\/missing/.test(note)));
     } finally {
       access.stop();
     }
@@ -468,6 +470,24 @@ describe("prepareGithubAccess", () => {
     });
     assert.match(access.env.AOS_GITHUB_STATUS ?? "", /AOS_GITHUB_APP_ID/);
     assert.equal(readdirSync(spool).length, 0);
+  });
+
+  test("a misconfigured key keeps host paths out of the container env but tells the host", () => {
+    const missingKey = join(base, "missing-key-dir", "app.pem");
+    const notes: string[] = [];
+    const access = prepareGithubAccess({
+      secrets: parseSecretsEnv(`AOS_GITHUB_APP_ID=${APP_ID}\nAOS_GITHUB_APP_KEY_FILE=${missingKey}\n`),
+      repoRoot: gitRepo("misconfigured-key", "https://github.com/acme/widgets.git"),
+      spoolDir: join(base, "spool-misconfigured"),
+      containerSpoolDir: "/mnt/aos-launch/run/github",
+      tokensDir: join(base, "tokens-misconfigured"),
+      notify: (note) => notes.push(note),
+    });
+    assert.ok(!(access.env.AOS_GITHUB_STATUS ?? "").includes(base));
+    assert.match(access.env.AOS_GITHUB_STATUS ?? "", /misconfigured/);
+    assert.equal(notes.length, 1);
+    assert.match(notes[0] ?? "", /does not exist/);
+    assert.ok(notes[0]?.includes(missingKey));
   });
 });
 

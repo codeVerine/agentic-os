@@ -321,6 +321,10 @@ const UNCONFIGURED =
   `GitHub access is not configured, so git cannot pull or push and gh is not signed in. ` +
   `On the Mac, set ${GITHUB_APP_ID_KEY} and ${GITHUB_APP_KEY_FILE_KEY} in ~/AgenticOS/secrets/env (see the aos README, "GitHub access") and start a new session.`;
 
+const MISCONFIGURED =
+  `GitHub access is misconfigured on the Mac, so git cannot pull or push and gh is not signed in. ` +
+  `On the Mac, fix the GitHub App settings in ~/AgenticOS/secrets/env (see the aos README, "GitHub access") and start a new session.`;
+
 function unavailable(message: string): GithubAccess {
   return { env: { AOS_GITHUB_STATUS: message }, stop: () => {} };
 }
@@ -335,7 +339,10 @@ function unavailable(message: string): GithubAccess {
 export function prepareGithubAccess(options: GithubAccessOptions): GithubAccess {
   const setup = githubSetup(options.secrets, options.home);
   if (setup.state === "unconfigured") return unavailable(UNCONFIGURED);
-  if (setup.state === "invalid") return unavailable(`GitHub access is misconfigured: ${setup.problem}`);
+  if (setup.state === "invalid") {
+    options.notify?.(`GitHub access is misconfigured: ${setup.problem}`);
+    return unavailable(MISCONFIGURED);
+  }
 
   const origin = spawnGit(["-C", options.repoRoot, "remote", "get-url", "origin"]);
   const remote = origin.status === 0 ? classifyRemote(origin.stdout) : ({ kind: "other" } as const);
@@ -382,7 +389,8 @@ export function prepareGithubAccess(options: GithubAccessOptions): GithubAccess 
     }
     try {
       return { ok: true, token: await tokenForRepo(setup.config, allowed, options.tokensDir, options.api) };
-    } catch {
+    } catch (error) {
+      options.notify?.(`could not get a GitHub token for ${repoSlug(allowed)}: ${(error as Error).message}`);
       return { ok: false, message: `aos could not get a GitHub token for ${repoSlug(allowed)}.` };
     }
   };
