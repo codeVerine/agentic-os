@@ -37,11 +37,7 @@ Limits:
 - Because the git directory is shared, one agent's planted hook also runs inside other agents' containers when
   they commit, with that container's API keys in its environment.
 
-Safe practice until the guard exists:
-
-- Do not run hook-sensitive git commands (`commit`, `checkout`, `merge`, `pull`, `rebase`, `push`) on the
-  Mac inside a project an agent has worked in. Review changes from inside an agent session instead.
-- Inspect `.git/config`, `.git/hooks/` and `.git/info/attributes` before running any host git there.
+Safe practice until the guard exists is in the README's ["Security"](../README.md#security) section.
 
 ## Live gap: host git still runs planted drivers
 
