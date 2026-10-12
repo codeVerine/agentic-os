@@ -60,7 +60,7 @@ export function runDoctor(paths: AosPaths, options: { readonly clean?: boolean }
   } else if (github.state === "invalid") {
     report("fail", "github", github.problem);
   } else {
-    report("warn", "github", `not configured: containers get no GitHub credentials. See README, "GitHub access"`);
+    report("warn", "github", `not configured: containers get no GitHub credentials. Run "aos github setup" (README, "GitHub access")`);
   }
 
   const docker = dockerServerVersion();

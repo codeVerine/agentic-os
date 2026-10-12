@@ -212,6 +212,23 @@ export async function mintInstallationToken(
   return { token: minted.token, expiresAt };
 }
 
+export interface AppInstallation {
+  readonly account: string;
+  /** "all" or "selected". */
+  readonly repositorySelection: string;
+}
+
+/** The installations of the App itself, authenticated with its JWT. */
+export async function listAppInstallations(config: GithubAppConfig, options: GithubApiOptions = {}): Promise<AppInstallation[]> {
+  const jwt = appJwt(config, (options.now ?? Date.now)());
+  const installations = (await api(options.baseUrl ?? API_URL, "GET", "/app/installations?per_page=100", jwt)) as unknown;
+  if (!Array.isArray(installations)) throw new AosError("GitHub returned an unexpected installations response.");
+  return installations.map((entry: { account?: { login?: unknown }; repository_selection?: unknown }) => ({
+    account: typeof entry.account?.login === "string" ? entry.account.login : "unknown",
+    repositorySelection: typeof entry.repository_selection === "string" ? entry.repository_selection : "unknown",
+  }));
+}
+
 interface CacheEntry {
   readonly appId: string;
   readonly token: string;
@@ -319,7 +336,7 @@ export interface GithubAccess {
 
 const UNCONFIGURED =
   `GitHub access is not configured, so git cannot pull or push and gh is not signed in. ` +
-  `On the Mac, set ${GITHUB_APP_ID_KEY} and ${GITHUB_APP_KEY_FILE_KEY} in ~/AgenticOS/secrets/env (see the aos README, "GitHub access") and start a new session.`;
+  `On the Mac, run "aos github setup" (or set ${GITHUB_APP_ID_KEY} and ${GITHUB_APP_KEY_FILE_KEY} in ~/AgenticOS/secrets/env, see the aos README, "GitHub access") and start a new session.`;
 
 const MISCONFIGURED =
   `GitHub access is misconfigured on the Mac, so git cannot pull or push and gh is not signed in. ` +

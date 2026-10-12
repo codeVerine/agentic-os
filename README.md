@@ -103,6 +103,7 @@ aos opencode --help
 | `aos init` | Creates `AOS_ROOT` with an optional `projects/`, `secrets/` (0700), `secrets/env` (0600) and one login directory per agent. Safe to re-run; it resets the secrets permissions. |
 | `aos doctor [--clean]` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, whether GitHub access is configured and its key is usable, that `treehouse` is on `PATH`, and which agents have a saved login or keys. It also reports stopped `aos-dev` containers left behind by sessions that could not clean up after themselves (for example after a `SIGKILL`, or a Docker restart, which shows as `Exited (255)`), and `aos doctor --clean` removes them. It only touches stopped containers named `sandcastle-*` that were started from `aos-dev:local`, never a running session. |
 | `aos image build [docker build args]` | Builds `aos-dev:local` from `docker/Dockerfile` with `AGENT_UID`/`AGENT_GID` set to your Mac user, and labels it with a hash of `docker/`. Launches, logins and `aos doctor` refuse an image whose label does not match the installed aos, so rebuild after upgrading aos. |
+| `aos github setup [--force]` | Creates the GitHub App that gives agents pull, push and PR access, through GitHub's App manifest flow with one confirmation click in the browser. Saves its key to `secrets/github-app.pem` (0600), sets `AOS_GITHUB_APP_ID` and `AOS_GITHUB_APP_KEY_FILE` in `secrets/env`, and checks the install. See "GitHub access". |
 | `aos secrets login <agent> [args]` | Runs the agent's own login flow in a throwaway `aos-dev` container that mounts only that agent's login directory. Extra arguments go to the agent's login command. |
 | `aos claude` / `aos codex` / `aos opencode` / `aos pi` `[args]` | Leases a fresh worktree from the project's treehouse pool and opens the agent's interactive interface in it. See "Worktrees". |
 | `aos claude --here` / etc. `[args]` | Opens the agent's interactive interface in the current directory, no worktree. |
@@ -258,7 +259,34 @@ Out of the box a container has no GitHub credentials: `git pull`, `git push` and
 GitHub App set up, an agent can pull, push its branch and open pull requests for the project it was started
 in, using a short-lived token for that one repository.
 
-### One-time setup
+### One-time setup: `aos github setup`
+
+```sh
+aos github setup
+aos image build        # once, so the image has the credential helper
+aos doctor             # should show "github"
+```
+
+`aos github setup` creates the GitHub App for you with GitHub's App manifest flow:
+
+1. It uses `gh api user` for your login (it asks when `gh` is not logged in) and picks a unique App name,
+   `aos-<login>-<4 hex>`.
+2. It opens your browser to GitHub with the App's settings filled in: contents and pull requests write, no
+   webhook, private to your account. Confirm the name and click **Create GitHub App**. This one click cannot
+   be skipped, because GitHub has no API that creates an App or downloads its private key.
+3. It receives the result on a temporary `127.0.0.1` port (checked against a random `state` value), writes the
+   private key to `~/AgenticOS/secrets/github-app.pem` (mode 0600), and sets `AOS_GITHUB_APP_ID` and
+   `AOS_GITHUB_APP_KEY_FILE` in `~/AgenticOS/secrets/env`. Other lines of that file are left as they are. The
+   client secret and webhook secret GitHub returns are discarded, and nothing secret is printed.
+4. It opens the App's install page. Choose **All repositories** so repositories you create later are covered,
+   then click Install. `aos` checks with the App's credentials that the installation exists.
+
+It refuses to overwrite an existing `github-app.pem`, and if GitHub access is already configured it says so
+and exits. `aos github setup --force` replaces either, for example to create a new App.
+
+### Manual setup
+
+The same result by hand, if you prefer not to use the command:
 
 1. On GitHub, go to Settings, Developer settings, GitHub Apps, New GitHub App.
    - Name: anything, for example `aos-<your-login>`.
