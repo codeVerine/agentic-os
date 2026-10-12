@@ -7,6 +7,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -27,6 +28,7 @@ const LOCK_STALE_MS = 30_000;
 const LOCK_TIMEOUT_MS = 60_000;
 const POLL_MS = 100;
 const REQUEST_ID = /^[0-9a-f]{32}$/;
+const MAX_REQUEST_BYTES = 4096;
 const SEGMENT = /^[A-Za-z0-9._-]+$/;
 
 /** The only permissions a token carries; no administration, no workflows, no merge-capable scopes beyond PR writes. */
@@ -360,7 +362,10 @@ export function prepareGithubAccess(options: GithubAccessOptions): GithubAccess 
     const fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
     try {
       if (!fstatSync(fd).isFile()) throw new AosError(`${file} is not a regular file.`);
-      return JSON.parse(readFileSync(fd, "utf8")) as CredentialRequest;
+      const buffer = Buffer.alloc(MAX_REQUEST_BYTES + 1);
+      const length = readSync(fd, buffer, 0, buffer.length, 0);
+      if (length > MAX_REQUEST_BYTES) throw new AosError(`${file} is larger than ${MAX_REQUEST_BYTES} bytes.`);
+      return JSON.parse(buffer.subarray(0, length).toString("utf8")) as CredentialRequest;
     } finally {
       closeSync(fd);
     }
@@ -390,9 +395,9 @@ export function prepareGithubAccess(options: GithubAccessOptions): GithubAccess 
     } catch {
       response = { ok: false, message: "aos could not answer the request." };
     }
-    rmSync(requestFile, { force: true });
+    rmSync(requestFile, { force: true, recursive: true });
     const staging = join(spool, `${id}.res.tmp`);
-    rmSync(staging, { force: true });
+    rmSync(staging, { force: true, recursive: true });
     writeFileSync(staging, JSON.stringify(response), { mode: 0o600, flag: "wx" });
     renameSync(staging, join(spool, `${id}.res`));
   };

@@ -369,6 +369,69 @@ describe("prepareGithubAccess", () => {
     }
   });
 
+  test("a request directory is answered and removed, not retried forever", async () => {
+    const { access, spool } = session(fake, gitRepo("dir-req", "https://github.com/acme/widgets.git"), join(base, "tokens-dir-req"));
+    const id = "e".repeat(32);
+    try {
+      mkdirSync(join(spool, `${id}.req`));
+      await waitForFile(join(spool, `${id}.res`));
+      assert.equal(JSON.parse(readFileSync(join(spool, `${id}.res`), "utf8")).ok, false);
+      assert.equal(existsSync(join(spool, `${id}.req`)), false);
+    } finally {
+      access.stop();
+    }
+  });
+
+  test("an oversized request is refused rather than read whole", async () => {
+    const { access, spool } = session(fake, gitRepo("oversize-req", "https://github.com/acme/widgets.git"), join(base, "tokens-oversize-req"));
+    const id = "f".repeat(32);
+    try {
+      writeFileSync(join(spool, `${id}.req`), JSON.stringify({ host: "github.com", path: "acme/widgets.git", pad: "x".repeat(1024 * 1024) }));
+      await waitForFile(join(spool, `${id}.res`));
+      assert.equal(JSON.parse(readFileSync(join(spool, `${id}.res`), "utf8")).ok, false);
+    } finally {
+      access.stop();
+    }
+  });
+
+  test("a staging directory is replaced, so the answer still lands", async () => {
+    const { access, spool } = session(fake, gitRepo("dir-res", "https://github.com/acme/widgets.git"), join(base, "tokens-dir-res"));
+    const id = "0".repeat(32);
+    try {
+      mkdirSync(join(spool, `${id}.res.tmp`));
+      writeFileSync(join(spool, `${id}.req`), JSON.stringify({ host: "github.com", path: "acme/widgets.git" }));
+      await waitForFile(join(spool, `${id}.res`));
+      assert.equal(JSON.parse(readFileSync(join(spool, `${id}.res`), "utf8")).ok, true);
+    } finally {
+      access.stop();
+    }
+  });
+
+  test("a failed token mint tells the container nothing about host paths", async () => {
+    const key = join(base, "vanishing.pem");
+    writeFileSync(key, keyPem, { mode: 0o600 });
+    const spool = mkdtempSync(join(base, "spool-vanishing-"));
+    const access = prepareGithubAccess({
+      secrets: parseSecretsEnv(`AOS_GITHUB_APP_ID=${APP_ID}\nAOS_GITHUB_APP_KEY_FILE=${key}\n`),
+      repoRoot: gitRepo("vanishing-key", "https://github.com/acme/widgets.git"),
+      spoolDir: spool,
+      containerSpoolDir: "/mnt/aos-launch/run/github",
+      tokensDir: join(base, "tokens-vanishing"),
+      api: { baseUrl: fake.url, now: () => fake.clock.now },
+    });
+    const id = "1".repeat(32);
+    try {
+      rmSync(key);
+      writeFileSync(join(spool, `${id}.req`), JSON.stringify({ host: "github.com", path: "acme/widgets.git" }));
+      await waitForFile(join(spool, `${id}.res`));
+      const response = readFileSync(join(spool, `${id}.res`), "utf8");
+      assert.equal(JSON.parse(response).ok, false);
+      assert.ok(!response.includes(base));
+    } finally {
+      access.stop();
+    }
+  });
+
   test("a staging entry that links to a host file is replaced, never written through", async () => {
     const victim = join(base, "victim-write");
     writeFileSync(victim, "HOST-KEEP");
