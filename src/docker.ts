@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AosError } from "./errors.ts";
 
@@ -105,4 +105,48 @@ export function buildImage(ids: HostIds, extraArgs: readonly string[]): number {
   );
   if (result.error) throw new AosError(`docker build failed to start: ${result.error.message}`);
   return result.status ?? 1;
+}
+
+const LAUNCH_MARKER_DIR = "/mnt/aos-launch";
+
+/**
+ * Container path a launch mounts its private run directory at. Sandcastle names its containers
+ * itself and does not expose the name, but the mount destination is unique to one launch, so it
+ * identifies exactly that launch's container.
+ */
+export function launchMarkerPath(runDir: string): string {
+  return `${LAUNCH_MARKER_DIR}/${basename(runDir)}`;
+}
+
+/** Force-removes the container, running or stopped, that mounts `markerPath`. Synchronous so it can run in an exit handler. */
+export function removeLaunchContainers(markerPath: string): void {
+  const found = docker(["ps", "-aq", "--no-trunc", "--filter", `volume=${markerPath}`]);
+  const ids = found.ok ? found.stdout.split("\n").filter(Boolean) : [];
+  if (ids.length > 0) docker(["rm", "-f", ...ids]);
+}
+
+/** Stopped containers started from the aos image by Sandcastle, left behind by sessions that could not clean up. */
+export function leftoverContainers(image = IMAGE): string[] {
+  const result = docker([
+    "ps",
+    "-aq",
+    "--no-trunc",
+    "--filter",
+    `ancestor=${image}`,
+    "--filter",
+    "name=^sandcastle-",
+    "--filter",
+    "status=exited",
+    "--filter",
+    "status=dead",
+  ]);
+  return result.ok ? result.stdout.split("\n").filter(Boolean) : [];
+}
+
+/** Removes the given containers; `removed` counts those docker confirmed, `error` is docker's stderr when any failed. */
+export function removeContainers(ids: readonly string[]): { removed: number; error?: string } {
+  if (ids.length === 0) return { removed: 0 };
+  const result = docker(["rm", ...ids]);
+  const removed = result.stdout.split("\n").filter(Boolean).length;
+  return result.ok ? { removed } : { removed, error: result.stderr };
 }

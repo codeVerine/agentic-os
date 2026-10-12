@@ -5,8 +5,9 @@ import { interactive } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { type AgentSpec, interactiveProvider } from "./agents.ts";
 import { applyDefaults } from "./defaults.ts";
-import { assertImageMatchesHost, hostIds, IMAGE } from "./docker.ts";
+import { assertImageMatchesHost, hostIds, IMAGE, launchMarkerPath, removeLaunchContainers } from "./docker.ts";
 import { AosError } from "./errors.ts";
+import { cleanupOnExit } from "./exit.ts";
 import { terminalEnv } from "./hostenv.ts";
 import { type AosPaths, locateProject, type ProjectLocation } from "./paths.ts";
 import { ensureAgentStateDirs, readSecretsEnv, selectAgentEnv } from "./secrets.ts";
@@ -50,6 +51,11 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
 
   mkdirSync(paths.run, { recursive: true });
   const runDir = mkdtempSync(join(paths.run, `${spec.name}-`));
+  const markerPath = launchMarkerPath(runDir);
+  const finish = cleanupOnExit(() => {
+    removeLaunchContainers(markerPath);
+    rmSync(runDir, { recursive: true, force: true });
+  });
   const launchScopedMounts = spec.launchScopedDirs.map((sandboxPath) => {
     const hostPath = join(runDir, basename(sandboxPath));
     mkdirSync(hostPath);
@@ -67,6 +73,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
         sandboxPath: mount.sandboxPath,
       })),
       ...launchScopedMounts,
+      { hostPath: runDir, sandboxPath: markerPath },
     ],
   });
 
@@ -81,7 +88,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
     });
     return result.exitCode;
   } finally {
-    rmSync(runDir, { recursive: true, force: true });
+    finish();
   }
 }
 

@@ -1,7 +1,17 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_NAMES, AGENTS } from "./agents.ts";
-import { contextHash, dockerEndpoint, dockerServerVersion, hostIds, IMAGE, imageConfig, imageProblem } from "./docker.ts";
+import {
+  contextHash,
+  dockerEndpoint,
+  dockerServerVersion,
+  hostIds,
+  IMAGE,
+  imageConfig,
+  imageProblem,
+  leftoverContainers,
+  removeContainers,
+} from "./docker.ts";
 import { AosError } from "./errors.ts";
 import type { AosPaths } from "./paths.ts";
 import { EMPTY_SECRETS, missingLoginFiles, readSecretsEnv, type SecretsEnv, selectAgentEnv, unroutedKeys } from "./secrets.ts";
@@ -10,7 +20,7 @@ import { treehouseVersion } from "./worktree.ts";
 type Level = "ok" | "warn" | "fail";
 const MARK: Record<Level, string> = { ok: "✓", warn: "!", fail: "✗" };
 
-export function runDoctor(paths: AosPaths): number {
+export function runDoctor(paths: AosPaths, options: { readonly clean?: boolean } = {}): number {
   let failed = false;
   const report = (level: Level, label: string, detail: string): void => {
     if (level === "fail") failed = true;
@@ -55,6 +65,17 @@ export function runDoctor(paths: AosPaths): number {
     const config = imageConfig();
     const problem = imageProblem(config, hostIds(), contextHash());
     report(problem ? "fail" : "ok", "image", problem ?? `${IMAGE} (user ${config?.User})`);
+
+    const leftovers = leftoverContainers();
+    if (leftovers.length === 0) {
+      report("ok", "containers", "no stopped aos containers");
+    } else if (options.clean) {
+      const removal = removeContainers(leftovers);
+      const summary = `removed ${removal.removed} of ${leftovers.length} stopped aos containers`;
+      report(removal.error ? "warn" : "ok", "containers", removal.error ? `${summary}: ${removal.error}` : summary);
+    } else {
+      report("warn", "containers", `${leftovers.length} stopped aos container${leftovers.length === 1 ? "" : "s"} left over: run "aos doctor --clean" to remove`);
+    }
   }
 
   const treehouse = treehouseVersion();

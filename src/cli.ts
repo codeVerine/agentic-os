@@ -13,7 +13,8 @@ import { worktreeCommand } from "./worktreeCli.ts";
 const USAGE = `Usage: aos <command>
 
   aos init                          Create AOS_ROOT (default ~/AgenticOS) with secrets/ and an optional projects/
-  aos doctor                        Check Docker, the aos-dev image, and per-agent secrets
+  aos doctor [--clean]              Check Docker, the aos-dev image, and per-agent secrets;
+                                    --clean removes stopped aos containers left by older sessions
   aos image build [docker args]     Build the aos-dev:local image for this Mac user
   aos secrets login <agent> [args]  Run the agent's own login inside the container and keep it
   aos <agent> [args]                Lease a fresh treehouse worktree and open the agent's own
@@ -47,8 +48,11 @@ async function main(argv: readonly string[]): Promise<number> {
     case "init":
       initRoot(paths);
       return 0;
-    case "doctor":
-      return runDoctor(paths);
+    case "doctor": {
+      const unknown = rest.filter((arg) => arg !== "--clean");
+      if (unknown.length > 0) throw new AosError(`Usage: aos doctor [--clean]`);
+      return runDoctor(paths, { clean: rest.includes("--clean") });
+    }
     case "image": {
       const [sub, ...args] = rest;
       if (sub !== "build") throw new AosError(`Usage: aos image build [docker build args]`);
