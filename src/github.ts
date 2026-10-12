@@ -4,7 +4,6 @@ import {
   constants as fsConstants,
   existsSync,
   fstatSync,
-  mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -300,9 +299,9 @@ export interface GithubAccessOptions {
   readonly secrets: SecretsEnv;
   /** Host directory of the repository whose origin remote names the one repository this launch may use. */
   readonly repoRoot: string;
-  /** The launch's private run directory, mounted into the container at `containerRunDir`. */
-  readonly runDir: string;
-  readonly containerRunDir: string;
+  /** Host directory created for this launch and mounted only at `containerSpoolDir`; the container cannot write above it. */
+  readonly spoolDir: string;
+  readonly containerSpoolDir: string;
   readonly tokensDir: string;
   readonly api?: GithubApiOptions;
   readonly home?: string;
@@ -326,7 +325,7 @@ function unavailable(message: string): GithubAccess {
 
 /**
  * Starts the host side of GitHub access for one launch. The container asks for tokens by writing
- * request files into a spool directory under the launch's run directory; this process answers them.
+ * request files into the spool directory mounted for this launch; this process answers them.
  * Only that spool directory is shared: the private key and every other repository's token stay here.
  * A plain directory is used because Docker Desktop cannot pass a host unix socket into a container,
  * and a TCP port on the Mac's localhost would be reachable by other local processes.
@@ -353,8 +352,7 @@ export function prepareGithubAccess(options: GithubAccessOptions): GithubAccess 
     );
   }
 
-  const spool = join(options.runDir, "github");
-  mkdirSync(spool, { recursive: true, mode: 0o700 });
+  const spool = options.spoolDir;
   const allowed = remote.repo;
   const inFlight = new Set<string>();
 
@@ -379,9 +377,8 @@ export function prepareGithubAccess(options: GithubAccessOptions): GithubAccess 
     }
     try {
       return { ok: true, token: await tokenForRepo(setup.config, allowed, options.tokensDir, options.api) };
-    } catch (error) {
-      if (!(error instanceof AosError)) throw error;
-      return { ok: false, message: error.message };
+    } catch {
+      return { ok: false, message: `aos could not get a GitHub token for ${repoSlug(allowed)}.` };
     }
   };
 
@@ -418,5 +415,5 @@ export function prepareGithubAccess(options: GithubAccessOptions): GithubAccess 
   }, POLL_MS);
   poll.unref();
 
-  return { env: { AOS_GITHUB_SPOOL: `${options.containerRunDir}/github` }, stop: () => clearInterval(poll) };
+  return { env: { AOS_GITHUB_SPOOL: options.containerSpoolDir }, stop: () => clearInterval(poll) };
 }

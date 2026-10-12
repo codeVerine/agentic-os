@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createPublicKey, createVerify, generateKeyPairSync, type KeyObject } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -139,18 +139,25 @@ function gitRepo(name: string, origin?: string): string {
 
 let launches = 0;
 function session(fake: FakeGithub, repoRoot: string, tokensDir: string, notify?: (message: string) => void) {
-  const runDir = join(base, `run-${launches++}`);
-  mkdirSync(runDir, { recursive: true });
+  const spool = mkdtempSync(join(base, `spool-${launches++}-`));
   const access = prepareGithubAccess({
     secrets,
     repoRoot,
-    runDir,
-    containerRunDir: "/mnt/aos-launch/run",
+    spoolDir: spool,
+    containerSpoolDir: "/mnt/aos-launch/run/github",
     tokensDir,
     api: { baseUrl: fake.url, now: () => fake.clock.now },
     notify,
   });
-  return { access, runDir, spool: join(runDir, "github") };
+  return { access, spool };
+}
+
+async function waitForFile(file: string): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (!existsSync(file)) {
+    if (Date.now() > deadline) throw new Error(`no answer written to ${file}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 const credentialInput = (path: string, host = "github.com"): string => `protocol=https\nhost=${host}\npath=${path}\n\n`;
@@ -322,12 +329,12 @@ describe("prepareGithubAccess", () => {
   });
   after(() => fake.close());
 
-  test("hands the container only a spool path under the launch run directory, never the key", () => {
-    const { access, spool, runDir } = session(fake, gitRepo("env-repo", "https://github.com/acme/widgets.git"), join(base, "tokens-env"));
+  test("hands the container only a spool path, never the key", () => {
+    const { access, spool } = session(fake, gitRepo("env-repo", "https://github.com/acme/widgets.git"), join(base, "tokens-env"));
     try {
       assert.deepEqual(Object.keys(access.env), ["AOS_GITHUB_SPOOL"]);
       assert.equal(access.env.AOS_GITHUB_SPOOL, "/mnt/aos-launch/run/github");
-      assert.ok(existsSync(spool) && spool.startsWith(runDir));
+      assert.ok(existsSync(spool));
       const everything = JSON.stringify(access.env);
       assert.ok(!everything.includes(keyFile));
       assert.ok(!everything.includes("PRIVATE KEY"));
@@ -339,11 +346,44 @@ describe("prepareGithubAccess", () => {
 
   test("an SSH origin gets a set-url message instead of access", () => {
     const notes: string[] = [];
-    const { access, spool } = session(fake, gitRepo("ssh-repo", "git@github.com:acme/widgets.git"), join(base, "tokens-ssh"), (note) => notes.push(note));
+    const { access } = session(fake, gitRepo("ssh-repo", "git@github.com:acme/widgets.git"), join(base, "tokens-ssh"), (note) => notes.push(note));
     assert.deepEqual(Object.keys(access.env), ["AOS_GITHUB_STATUS"]);
     assert.match(access.env.AOS_GITHUB_STATUS ?? "", /git remote set-url origin https:\/\/github\.com\/acme\/widgets\.git/);
     assert.equal(notes.length, 1);
-    assert.ok(!existsSync(spool));
+  });
+
+  test("a request file that links to a host file is refused without reading the file", async () => {
+    const victim = join(base, "victim-read");
+    writeFileSync(victim, "HOST-SECRET");
+    const { access, spool } = session(fake, gitRepo("symlink-req", "https://github.com/acme/widgets.git"), join(base, "tokens-symlink-req"));
+    const id = "a".repeat(32);
+    try {
+      symlinkSync(victim, join(spool, `${id}.req`));
+      await waitForFile(join(spool, `${id}.res`));
+      const response = readFileSync(join(spool, `${id}.res`), "utf8");
+      assert.equal(JSON.parse(response).ok, false);
+      assert.ok(!response.includes("HOST-SECRET"));
+      assert.equal(readFileSync(victim, "utf8"), "HOST-SECRET");
+    } finally {
+      access.stop();
+    }
+  });
+
+  test("a staging entry that links to a host file is replaced, never written through", async () => {
+    const victim = join(base, "victim-write");
+    writeFileSync(victim, "HOST-KEEP");
+    const { access, spool } = session(fake, gitRepo("symlink-res", "https://github.com/acme/widgets.git"), join(base, "tokens-symlink-res"));
+    const id = "b".repeat(32);
+    try {
+      symlinkSync(victim, join(spool, `${id}.res.tmp`));
+      writeFileSync(join(spool, `${id}.req`), JSON.stringify({ host: "github.com", path: "acme/widgets.git" }));
+      await waitForFile(join(spool, `${id}.res`));
+      assert.ok(lstatSync(join(spool, `${id}.res`)).isFile());
+      assert.equal(JSON.parse(readFileSync(join(spool, `${id}.res`), "utf8")).ok, true);
+      assert.equal(readFileSync(victim, "utf8"), "HOST-KEEP");
+    } finally {
+      access.stop();
+    }
   });
 
   test("a project without a GitHub origin gets a status message", () => {
@@ -354,17 +394,17 @@ describe("prepareGithubAccess", () => {
   });
 
   test("an unconfigured aos keeps containers without credentials and says why", () => {
-    const runDir = join(base, "run-unconfigured");
-    mkdirSync(runDir);
+    const spool = join(base, "spool-unconfigured");
+    mkdirSync(spool);
     const access = prepareGithubAccess({
       secrets: parseSecretsEnv(""),
       repoRoot: gitRepo("unconfigured-repo", "https://github.com/acme/widgets.git"),
-      runDir,
-      containerRunDir: "/mnt/aos-launch/run",
+      spoolDir: spool,
+      containerSpoolDir: "/mnt/aos-launch/run/github",
       tokensDir: join(base, "tokens-unconfigured"),
     });
     assert.match(access.env.AOS_GITHUB_STATUS ?? "", /AOS_GITHUB_APP_ID/);
-    assert.equal(readdirSync(runDir).length, 0);
+    assert.equal(readdirSync(spool).length, 0);
   });
 });
 

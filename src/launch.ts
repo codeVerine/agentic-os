@@ -53,9 +53,12 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   mkdirSync(paths.run, { recursive: true });
   const runDir = mkdtempSync(join(paths.run, `${spec.name}-`));
   const markerPath = launchMarkerPath(runDir);
+  const spoolDir = mkdtempSync(join(paths.run, "github-"));
+  const containerSpoolDir = `${markerPath}/github`;
   const finish = cleanupOnExit(() => {
     removeLaunchContainers(markerPath);
     rmSync(runDir, { recursive: true, force: true });
+    rmSync(spoolDir, { recursive: true, force: true });
   });
   const launchScopedMounts = spec.launchScopedDirs.map((sandboxPath) => {
     const hostPath = join(runDir, basename(sandboxPath));
@@ -66,8 +69,8 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   const github = prepareGithubAccess({
     secrets,
     repoRoot: target.hostRoot,
-    runDir,
-    containerRunDir: markerPath,
+    spoolDir,
+    containerSpoolDir,
     tokensDir: paths.githubTokens,
     notify: (message) => console.error(`aos: ${message}`),
   });
@@ -84,6 +87,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
       })),
       ...launchScopedMounts,
       { hostPath: runDir, sandboxPath: markerPath },
+      { hostPath: spoolDir, sandboxPath: containerSpoolDir },
     ],
   });
 
