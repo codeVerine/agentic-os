@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_NAMES, type AgentName, type AgentSpec, isAgentName } from "./agents.ts";
 import { AosError } from "./errors.ts";
@@ -16,6 +16,11 @@ const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SECTION = /^\[\s*([^\]]*?)\s*\]$/;
 const INLINE_COMMENT = /^(\s+#.*)?$/;
 
+/** Top-level keys aos reads itself to give containers GitHub access; they are never passed into a container. */
+export const GITHUB_APP_ID_KEY = "AOS_GITHUB_APP_ID";
+export const GITHUB_APP_KEY_FILE_KEY = "AOS_GITHUB_APP_KEY_FILE";
+const AOS_OWN_KEYS: readonly string[] = [GITHUB_APP_ID_KEY, GITHUB_APP_KEY_FILE_KEY];
+
 export const EMPTY_SECRETS: SecretsEnv = { shared: new Map(), perAgent: new Map() };
 
 export const ENV_TEMPLATE = `# aos secrets: KEY=VALUE lines, one per line. Keep this file mode 0600.
@@ -28,6 +33,12 @@ export const ENV_TEMPLATE = `# aos secrets: KEY=VALUE lines, one per line. Keep 
 #
 # [pi]
 # MY_ROUTER_API_KEY=
+#
+# GitHub access for agents (see README, "GitHub access"). Both are read by aos
+# on the Mac and never passed into a container. The key file must be mode 0600.
+#
+# AOS_GITHUB_APP_ID=
+# AOS_GITHUB_APP_KEY_FILE=~/AgenticOS/secrets/github-app.pem
 `;
 
 export function parseSecretsEnv(content: string, source = "secrets env"): SecretsEnv {
@@ -93,7 +104,9 @@ export function selectAgentEnv(spec: AgentSpec, secrets: SecretsEnv): Record<str
 
 /** Shared keys that no agent will receive, usually a typo or a key that belongs in a section. */
 export function unroutedKeys(secrets: SecretsEnv, specs: readonly AgentSpec[]): string[] {
-  return [...secrets.shared.keys()].filter((key) => !specs.some((spec) => spec.envKeys.includes(key)));
+  return [...secrets.shared.keys()].filter(
+    (key) => !AOS_OWN_KEYS.includes(key) && !specs.some((spec) => spec.envKeys.includes(key)),
+  );
 }
 
 export function assertPrivate(path: string, mode: number): void {
@@ -118,6 +131,38 @@ export function ensureAgentStateDirs(secretsDir: string, spec: AgentSpec): strin
     if (mount.subdir) ensurePrivateDir(join(agentDir, mount.subdir));
   }
   return agentDir;
+}
+
+/**
+ * Sets top-level KEY=VALUE lines without touching anything else. An existing assignment is replaced in
+ * place, a commented `# KEY=` placeholder is turned into the assignment, and a new key is inserted
+ * before the first [agent] section, since keys under a section reach only that agent.
+ */
+export function setTopLevelKeys(content: string, entries: Readonly<Record<string, string>>): string {
+  const lines = content === "" ? [] : content.replace(/\n$/, "").split("\n");
+  const firstSection = lines.findIndex((line) => SECTION.test(line.trim()));
+  const topLevel = firstSection === -1 ? lines.length : firstSection;
+  let insertAt = topLevel;
+  while (insertAt > 0 && lines[insertAt - 1]?.trim() === "") insertAt -= 1;
+  const insertions: string[] = [];
+  for (const [key, value] of Object.entries(entries)) {
+    const assignment = new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=`);
+    const placeholder = new RegExp(`^\\s*#\\s*${key}\\s*=\\s*$`);
+    let at = lines.findIndex((line, index) => index < topLevel && assignment.test(line));
+    if (at === -1) at = lines.findIndex((line, index) => index < topLevel && placeholder.test(line));
+    if (at === -1) insertions.push(`${key}=${value}`);
+    else lines[at] = `${key}=${value}`;
+  }
+  lines.splice(insertAt, 0, ...insertions);
+  return `${lines.join("\n")}\n`;
+}
+
+/** Applies `setTopLevelKeys` to the secrets env file, keeping it mode 0600; creates it when absent. */
+export function writeSecretsEnvKeys(path: string, entries: Readonly<Record<string, string>>): void {
+  const current = existsSync(path) ? readFileSync(path, "utf8") : ENV_TEMPLATE;
+  const staging = `${path}.aos-${process.pid}.tmp`;
+  writeFileSync(staging, setTopLevelKeys(current, entries), { mode: 0o600 });
+  renameSync(staging, path);
 }
 
 /** Writes the env template when absent; returns true when it created the file. */

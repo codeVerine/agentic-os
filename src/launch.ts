@@ -8,6 +8,7 @@ import { applyDefaults } from "./defaults.ts";
 import { assertImageMatchesHost, hostIds, IMAGE, launchMarkerPath, removeLaunchContainers } from "./docker.ts";
 import { AosError } from "./errors.ts";
 import { cleanupOnExit } from "./exit.ts";
+import { prepareGithubAccess } from "./github.ts";
 import { terminalEnv } from "./hostenv.ts";
 import { type AosPaths, locateProject, type ProjectLocation } from "./paths.ts";
 import { ensureAgentStateDirs, readSecretsEnv, selectAgentEnv } from "./secrets.ts";
@@ -52,14 +53,26 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   mkdirSync(paths.run, { recursive: true });
   const runDir = mkdtempSync(join(paths.run, `${spec.name}-`));
   const markerPath = launchMarkerPath(runDir);
+  const spoolDir = mkdtempSync(join(paths.run, "github-"));
+  const containerSpoolDir = `${markerPath}/github`;
   const finish = cleanupOnExit(() => {
     removeLaunchContainers(markerPath);
     rmSync(runDir, { recursive: true, force: true });
+    rmSync(spoolDir, { recursive: true, force: true });
   });
   const launchScopedMounts = spec.launchScopedDirs.map((sandboxPath) => {
     const hostPath = join(runDir, basename(sandboxPath));
     mkdirSync(hostPath);
     return { hostPath, sandboxPath };
+  });
+
+  const github = prepareGithubAccess({
+    secrets,
+    repoRoot: target.hostRoot,
+    spoolDir,
+    containerSpoolDir,
+    tokensDir: paths.githubTokens,
+    notify: (message) => console.error(`aos: ${message}`),
   });
 
   const sandbox = docker({
@@ -74,6 +87,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
       })),
       ...launchScopedMounts,
       { hostPath: runDir, sandboxPath: markerPath },
+      { hostPath: spoolDir, sandboxPath: containerSpoolDir },
     ],
   });
 
@@ -84,10 +98,17 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
       sandbox,
       cwd: target.hostRoot,
       branchStrategy: { type: "head" },
-      env: { ...terminalEnv(options.hostEnv), ...spec.configEnv, ...spec.launchEnv, ...selectAgentEnv(spec, secrets) },
+      env: {
+        ...terminalEnv(options.hostEnv),
+        ...spec.configEnv,
+        ...spec.launchEnv,
+        ...selectAgentEnv(spec, secrets),
+        ...github.env,
+      },
     });
     return result.exitCode;
   } finally {
+    github.stop();
     finish();
   }
 }

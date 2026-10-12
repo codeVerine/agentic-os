@@ -22,7 +22,8 @@ repository directly, the way earlier versions of `aos` always did. See "Worktree
   Mac directly.
 - The container sees the project, the project's `.git`, and that agent's own login directory from
   `~/AgenticOS/secrets/<agent>/`. It never sees the Mac's `~/.ssh`, `gh` login, `~/.claude`, `~/.codex`,
-  OpenCode or Pi homes, and `aos` never reads them.
+  OpenCode or Pi homes, and `aos` never reads them. With GitHub access set up ("GitHub access" below) it can
+  also pull, push and open pull requests for that one project's repository, and nothing else on GitHub.
 - Each launch starts its own throwaway container and removes it when the session ends: on a normal exit, when
   the agent exits non-zero, and on Ctrl-C, `SIGTERM` or a closed terminal (`SIGHUP`). `aos` finds the
   container by a per-launch mount, so it never touches another session's container. A launch whose `aos`
@@ -100,8 +101,9 @@ aos opencode --help
 | Command | What it does |
 | --- | --- |
 | `aos init` | Creates `AOS_ROOT` with an optional `projects/`, `secrets/` (0700), `secrets/env` (0600) and one login directory per agent. Safe to re-run; it resets the secrets permissions. |
-| `aos doctor [--clean]` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, that `treehouse` is on `PATH`, and which agents have a saved login or keys. It also reports stopped `aos-dev` containers left behind by sessions that could not clean up after themselves (for example after a `SIGKILL`, or a Docker restart, which shows as `Exited (255)`), and `aos doctor --clean` removes them. It only touches stopped containers named `sandcastle-*` that were started from `aos-dev:local`, never a running session. |
+| `aos doctor [--clean]` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, whether GitHub access is configured and its key is usable, that `treehouse` is on `PATH`, and which agents have a saved login or keys. It also reports stopped `aos-dev` containers left behind by sessions that could not clean up after themselves (for example after a `SIGKILL`, or a Docker restart, which shows as `Exited (255)`), and `aos doctor --clean` removes them. It only touches stopped containers named `sandcastle-*` that were started from `aos-dev:local`, never a running session. |
 | `aos image build [docker build args]` | Builds `aos-dev:local` from `docker/Dockerfile` with `AGENT_UID`/`AGENT_GID` set to your Mac user, and labels it with a hash of `docker/`. Launches, logins and `aos doctor` refuse an image whose label does not match the installed aos, so rebuild after upgrading aos. |
+| `aos github setup [--force]` | Creates the GitHub App that gives agents pull, push and PR access, through GitHub's App manifest flow with one confirmation click in the browser. Saves its key to `secrets/github-app.pem` (0600), sets `AOS_GITHUB_APP_ID` and `AOS_GITHUB_APP_KEY_FILE` in `secrets/env`, and checks the install. See "GitHub access". |
 | `aos secrets login <agent> [args]` | Runs the agent's own login flow in a throwaway `aos-dev` container that mounts only that agent's login directory. Extra arguments go to the agent's login command. |
 | `aos claude` / `aos codex` / `aos opencode` / `aos pi` `[args]` | Leases a fresh worktree from the project's treehouse pool and opens the agent's interactive interface in it. See "Worktrees". |
 | `aos claude --here` / etc. `[args]` | Opens the agent's interactive interface in the current directory, no worktree. |
@@ -160,7 +162,8 @@ own branch and its own files, without waiting on each other or on git status in 
 - **Config file.** treehouse's own `treehouse.toml` (`treehouse init` to create one) controls where the pool
   lives and how large it grows; `aos` does not manage that file. Without one, treehouse uses its own
   defaults.
-- **Out of scope.** `aos` does not open a PR, push anywhere, or touch the repository's remote; "merge" is a
+- **Out of scope.** The host `aos` commands do not open a PR, push anywhere, or touch the repository's remote.
+  Agents can pull, push and open PRs through their own GitHub access ("GitHub access" below); "merge" is a
   local `git merge`, same as you'd run by hand, and every host git call `aos worktree merge/rm/prune` makes
   runs with the hook and fsmonitor protection described in "Security" below, which does not cover filter
   drivers, merge drivers or `gpg.program`. Worktrees narrow the blast radius of a bad edit to their own
@@ -235,7 +238,9 @@ MY_ROUTER_API_KEY=...
 MY_ROUTER_API_KEY=...
 ```
 
-`aos doctor` warns about top-level keys that no agent would receive.
+`aos doctor` warns about top-level keys that no agent would receive. `AOS_GITHUB_APP_ID` and
+`AOS_GITHUB_APP_KEY_FILE` are read by `aos` itself, never passed to a container, and are not warned about
+(see "GitHub access").
 
 A key reaches the agent as an environment variable. Agents with built-in support for the provider pick it up
 directly: OpenRouter appears in Pi's and OpenCode's model pickers as soon as `OPENROUTER_API_KEY` is set.
@@ -247,6 +252,99 @@ where it persists for every project:
 - OpenCode: `secrets/opencode/config/opencode.json`, for example
   `{"provider": {"myrouter": {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": "https://router.example/v1", "apiKey": "{env:MY_ROUTER_API_KEY}"}, "models": {"model-id": {}}}}}`
 - Codex: a `model_providers` entry with `env_key` in `secrets/codex/config.toml`.
+
+## GitHub access
+
+Out of the box a container has no GitHub credentials: `git pull`, `git push` and `gh pr create` fail. With a
+GitHub App set up, an agent can pull, push its branch and open pull requests for the project it was started
+in, using a short-lived token for that one repository.
+
+### One-time setup: `aos github setup`
+
+```sh
+aos github setup
+aos image build        # once, so the image has the credential helper
+aos doctor             # should show "github"
+```
+
+`aos github setup` creates the GitHub App for you with GitHub's App manifest flow:
+
+1. It uses `gh api user` for your login (it asks when `gh` is not logged in) and picks a unique App name,
+   `aos-<login>-<4 hex>`.
+2. It opens your browser to GitHub with the App's settings filled in: contents and pull requests write, no
+   webhook, private to your account. Confirm the name and click **Create GitHub App**. This one click cannot
+   be skipped, because GitHub has no API that creates an App or downloads its private key.
+3. It receives the result on a temporary `127.0.0.1` port (checked against a random `state` value), writes the
+   private key to `~/AgenticOS/secrets/github-app.pem` (mode 0600), and sets `AOS_GITHUB_APP_ID` and
+   `AOS_GITHUB_APP_KEY_FILE` in `~/AgenticOS/secrets/env`. Other lines of that file are left as they are. The
+   client secret and webhook secret GitHub returns are discarded, and nothing secret is printed.
+4. It opens the App's install page. Choose **All repositories** so repositories you create later are covered,
+   then click Install. `aos` checks with the App's credentials that the installation exists.
+
+It refuses to overwrite an existing `github-app.pem`, and if GitHub access is already configured it says so
+and exits. `aos github setup --force` replaces either, for example to create a new App.
+
+### Manual setup
+
+The same result by hand, if you prefer not to use the command:
+
+1. On GitHub, go to Settings, Developer settings, GitHub Apps, New GitHub App.
+   - Name: anything, for example `aos-<your-login>`.
+   - Homepage URL: any URL. Untick Webhook, since `aos` never receives events.
+   - Repository permissions: **Contents: Read and write** and **Pull requests: Read and write**. Leave
+     everything else, in particular Administration, at No access. Metadata: Read-only is added automatically.
+   - Where can this GitHub App be installed: Only on this account.
+2. Create the App, then note its **App ID** (or Client ID) at the top of its settings page.
+3. Under Private keys, Generate a private key. Move the downloaded `.pem` file to the Mac's
+   `~/AgenticOS/secrets/github-app.pem` and run `chmod 600` on it.
+4. Install the App on your account (Install App in its sidebar) and choose **All repositories**, so
+   repositories you create later are covered with no further step.
+5. Add two lines to `~/AgenticOS/secrets/env`:
+
+   ```ini
+   AOS_GITHUB_APP_ID=123456
+   AOS_GITHUB_APP_KEY_FILE=~/AgenticOS/secrets/github-app.pem
+   ```
+
+6. Rebuild the image once, so it has the credential helper: `aos image build`. Then `aos doctor` should
+   show `✓ github`.
+
+### How it works
+
+- The private key stays on the Mac. `aos` signs the App's short-lived JWT itself; the key, the JWT and every
+  other repository's token never enter a container.
+- A launch resolves its repository from the project's `origin` remote on the Mac. Only `https://github.com/`
+  remotes work. An SSH remote (`git@github.com:...`) gets a message with the `git remote set-url origin
+  https://github.com/<owner>/<repo>.git` fix, and the session starts without GitHub access.
+- Inside the container git uses a credential helper, and `gh` is a small wrapper, that ask `aos` for a token
+  only when a command needs one: `git pull`, `git push`, `gh pr create`. They ask through a per-launch
+  directory under `~/AgenticOS/state/run/`, mounted into that one container, and `aos` answers only for the
+  launch's own repository. A request for any other repository or host is refused.
+- A token is limited to that one repository, with contents and pull requests write only. It cannot change
+  repository settings or administration. GitHub ties merging a pull request to contents write, so a token
+  can also merge pull requests; that is recoverable, unlike a force push (see the next section).
+- GitHub installation tokens always expire after one hour and cannot be made permanent. `aos` keeps one
+  token per repository in `~/AgenticOS/secrets/github-tokens/` (directory mode 0700, files 0600), shared by every parallel
+  session of that repository, and mints a new one only when less than five minutes of the hour remain. A long
+  session never notices, because each command asks again. No personal access token is involved.
+
+### Write access means force push, so consider a ruleset
+
+Contents write is what lets an agent push its branch, and GitHub does not separate that from **force
+pushes** and **branch deletion**: a token with write access can rewrite or delete any branch of that
+repository, including the default branch, unless a rule blocks it. `aos` does not set up server-side rules.
+If you want to block them, add a repository ruleset (Settings, Rules, Rulesets, New branch ruleset) that
+targets all branches and enables "Restrict deletions" and "Block force pushes". A ruleset can also require
+pull requests for the default branch, which stops direct pushes to it.
+
+### Limits
+
+- `aos` takes the repository from `origin` when the session starts, and an agent can edit `.git/config`
+  (see "Warning: host git in agent-written projects"). Check `git remote -v` before launching in a
+  repository an agent has worked in if the remote matters to you.
+- Requests to the host are answered while the `aos` process of that launch is running, which is the whole
+  session. A running session cannot use access that was set up after it started.
+- Linux hosts work the same way, but are untested like the rest of the Linux support.
 
 ## Permissions in the container: everything allowed by default
 
@@ -306,8 +404,9 @@ merge drivers and `gpg.program` planted in `.git/config` still run on the Mac, i
 This is the MVP's first slice. It skips, on purpose:
 
 - Headless sessions driven from chat (`start`, `send`, `stop`, `status`, `logs`), a runner, and a queue.
-- Per-repository GitHub tokens through a GitHub App, and repository creation. Containers get no GitHub
-  credentials; `gh` in the image is unauthenticated.
+- Repository creation, and GitHub rulesets: `aos` gives agents a per-repository GitHub App token (see "GitHub
+  access") but does not set up server-side rules. Without the App configured, containers get no GitHub
+  credentials and `gh` in the image is unauthenticated.
 - Host metrics, ZeroClaw, Telegram and notifications.
 - Deeper isolation and hardening: dropped capabilities, read-only root filesystem, resource limits, egress
   filtering, per-session networks and fresh per-session clones. Containers use Docker's default bridge

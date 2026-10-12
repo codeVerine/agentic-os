@@ -4,6 +4,7 @@ import { buildImage, hostIds } from "./docker.ts";
 import { runDoctor } from "./doctor.ts";
 import { AosError } from "./errors.ts";
 import { replaceProcessEnv, sandcastleHostEnv } from "./hostenv.ts";
+import { setupGithubApp } from "./githubSetup.ts";
 import { initRoot } from "./init.ts";
 import { launchAgent } from "./launch.ts";
 import { loginAgent } from "./login.ts";
@@ -17,6 +18,9 @@ const USAGE = `Usage: aos <command>
                                     --clean removes stopped aos containers left by older sessions
   aos image build [docker args]     Build the aos-dev:local image for this Mac user
   aos secrets login <agent> [args]  Run the agent's own login inside the container and keep it
+  aos github setup [--force]        Create the GitHub App that gives agents pull, push and PR access
+                                    (one confirmation click in the browser), save its key, check
+                                    the install; --force replaces an existing configuration
   aos <agent> [args]                Lease a fresh treehouse worktree and open the agent's own
                                     interface in it (agents: ${AGENT_NAMES.join(", ")})
   aos <agent> --here [args]         Same, but run in the current directory with no worktree
@@ -64,6 +68,12 @@ async function main(argv: readonly string[]): Promise<number> {
         throw new AosError(`Usage: aos secrets login <${AGENT_NAMES.join("|")}> [login args]`);
       }
       return loginAgent(agentSpec(agent), args, paths, hostEnv);
+    }
+    case "github": {
+      const [sub, ...flags] = rest;
+      const unknown = flags.filter((arg) => arg !== "--force");
+      if (sub !== "setup" || unknown.length > 0) throw new AosError(`Usage: aos github setup [--force]`);
+      return setupGithubApp({ paths, force: flags.includes("--force"), hostEnv });
     }
     case "worktree":
       return worktreeCommand(rest, process.cwd(), paths);

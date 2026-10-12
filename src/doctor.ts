@@ -13,6 +13,7 @@ import {
   removeContainers,
 } from "./docker.ts";
 import { AosError } from "./errors.ts";
+import { githubSetup } from "./github.ts";
 import type { AosPaths } from "./paths.ts";
 import { EMPTY_SECRETS, missingLoginFiles, readSecretsEnv, type SecretsEnv, selectAgentEnv, unroutedKeys } from "./secrets.ts";
 import { treehouseVersion } from "./worktree.ts";
@@ -51,6 +52,15 @@ export function runDoctor(paths: AosPaths, options: { readonly clean?: boolean }
       if (!(error instanceof AosError)) throw error;
       report("fail", "env file", error.message);
     }
+  }
+
+  const github = githubSetup(secrets);
+  if (github.state === "ready") {
+    report("ok", "github", `App ${github.config.appId}, key ${github.config.keyFile}; agents get a token for their project's origin repository`);
+  } else if (github.state === "invalid") {
+    report("fail", "github", github.problem);
+  } else {
+    report("warn", "github", `not configured: containers get no GitHub credentials. Run "aos github setup" (README, "GitHub access")`);
   }
 
   const docker = dockerServerVersion();
