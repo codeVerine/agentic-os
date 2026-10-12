@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AosError } from "./errors.ts";
+import { spawnGit } from "./git.ts";
 
 export interface AosPaths {
   readonly root: string;
@@ -13,6 +13,8 @@ export interface AosPaths {
   readonly sessions: string;
   /** Per-launch runtime directories, removed when the launch ends. */
   readonly run: string;
+  /** One JSON registry file per project (by git-common-dir hash) of aos-leased worktrees. */
+  readonly worktrees: string;
 }
 
 export interface ProjectLocation {
@@ -43,6 +45,7 @@ export function aosPaths(root: string): AosPaths {
     secretsEnv: join(secrets, "env"),
     sessions: join(root, "state", "sessions"),
     run: join(root, "state", "run"),
+    worktrees: join(root, "state", "worktrees"),
   };
 }
 
@@ -70,7 +73,7 @@ export function locateProject(cwd: string): ProjectLocation {
  * A relative gitdir resolves against the container path of `root` instead, and a submodule's `core.worktree`
  * points git back at the host path of `root`, so git fails inside the container for both.
  */
-function assertGitMetadataMountable(root: string): void {
+export function assertGitMetadataMountable(root: string): void {
   const dotGit = join(root, ".git");
   if (lstatSync(dotGit, { throwIfNoEntry: false })?.isFile() !== true) return;
   const superproject = git(root, "rev-parse", "--show-superproject-working-tree");
@@ -107,6 +110,17 @@ export function sandboxName(name: string, root: string): string {
   return `${slug}-${hash}`;
 }
 
+/**
+ * Real path of the repository's shared git directory, the same for the main checkout and every
+ * linked worktree. A stable identity for "this repository" independent of which worktree aos runs
+ * from, used to key the aos worktree registry and the container path of a leased worktree.
+ */
+export function gitCommonDir(root: string): string {
+  const common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  if (common === "") throw new AosError(`Could not resolve the git directory for ${root}.`);
+  return realpathOrThrow(common, `Git directory ${common} does not exist.`);
+}
+
 function gitRoot(dir: string): string {
   const top = git(dir, "rev-parse", "--show-toplevel");
   if (top === "") {
@@ -118,7 +132,7 @@ function gitRoot(dir: string): string {
 }
 
 function git(dir: string, ...args: string[]): string {
-  const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8" });
+  const result = spawnGit(["-C", dir, ...args]);
   return result.status === 0 ? result.stdout.trim() : "";
 }
 

@@ -5,6 +5,7 @@ import { contextHash, dockerEndpoint, dockerServerVersion, hostIds, IMAGE, image
 import { AosError } from "./errors.ts";
 import type { AosPaths } from "./paths.ts";
 import { EMPTY_SECRETS, missingLoginFiles, readSecretsEnv, type SecretsEnv, selectAgentEnv, unroutedKeys } from "./secrets.ts";
+import { treehouseVersion } from "./worktree.ts";
 
 type Level = "ok" | "warn" | "fail";
 const MARK: Record<Level, string> = { ok: "✓", warn: "!", fail: "✗" };
@@ -55,6 +56,13 @@ export function runDoctor(paths: AosPaths): number {
     const problem = imageProblem(config, hostIds(), contextHash());
     report(problem ? "fail" : "ok", "image", problem ?? `${IMAGE} (user ${config?.User})`);
   }
+
+  const treehouse = treehouseVersion();
+  report(
+    treehouse ? "ok" : "warn",
+    "treehouse",
+    treehouse ? treehouse : `not found on PATH: install it from https://github.com/kunchenguid/treehouse, or always run "aos <agent> --here"`,
+  );
 
   for (const name of AGENT_NAMES) {
     const spec = AGENTS[name];

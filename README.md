@@ -8,6 +8,11 @@ Docker container through [Sandcastle](https://github.com/mattpocock/sandcastle) 
 Mac. You `cd` into a project and run `aos pi` the same way you would run `pi`: the same interface, the same
 model picker, the same keys.
 
+Every launch gets its own git worktree, leased from the project's
+[treehouse](https://github.com/kunchenguid/treehouse) pool, so several agents can work on one project at
+once without stepping on each other's files. `aos <agent> --here` skips that and runs in the current
+repository directly, the way earlier versions of `aos` always did. See "Worktrees" below.
+
 ## What runs where
 
 - Agents run only inside the local `aos-dev:local` image (Debian bookworm, Node 24, git, gh, ripgrep, fd,
@@ -26,6 +31,9 @@ model picker, the same keys.
 
 - macOS with Docker Desktop running. Linux with Docker should work too but is untested.
 - Node.js 24 or newer.
+- The [treehouse](https://github.com/kunchenguid/treehouse) CLI on `PATH`, for `aos <agent>`'s worktrees.
+  Not needed for `aos <agent> --here`. `aos doctor` and every worktree-leasing launch point at this URL and
+  at `--here` if `treehouse` is missing.
 
 ## Install and first run
 
@@ -53,20 +61,24 @@ Set `AOS_ROOT` to use a directory other than `~/AgenticOS`.
 
 Run the launchers from any directory inside a git repository, wherever it lives; `AOS_ROOT/projects/` is
 only a convenient optional place for projects. The project is the git repository root of the directory you run
-`aos` in, and only that folder is mounted into the container. The agent starts in the same subdirectory you ran
-it from. The repository needs at least one commit (a Sandcastle requirement); a directory outside a git
+`aos` in. Only that folder is mounted into the container (or, without `--here`, only the worktree `aos` leased
+for it). The agent starts in the same subdirectory you ran it from, or at the worktree root when that
+subdirectory does not exist in the worktree, such as an untracked or ignored directory. The repository needs at least one commit (a Sandcastle requirement); a directory outside a git
 repository is refused and `aos` never runs `git init` for you.
 
-A linked worktree (`git worktree add`) works too: Sandcastle also mounts the main repository's `.git` at its
-host path so git inside the container can reach it. A worktree whose `.git` file uses a relative gitdir and a
-submodule are refused, because git cannot resolve their repository from inside the container; run `aos` from
-the main checkout or the superproject instead. Any other `.git` file, such as one made by `--separate-git-dir`,
-is refused too, since the sandbox would have to mount a directory above the git directory.
+A linked worktree (`git worktree add`, including one `aos` itself leased from treehouse) works as the
+launch directory too: Sandcastle also mounts the main repository's `.git` at its host path so git inside the
+container can reach it. A worktree whose `.git` file uses a relative gitdir and a submodule are refused,
+because git cannot resolve their repository from inside the container; run `aos` from the main checkout or
+the superproject instead. Any other `.git` file, such as one made by `--separate-git-dir`, is refused too,
+since the sandbox would have to mount a directory above the git directory.
 
-The container path is `/home/agent/projects/<name>-<hash>`, where `<name>` is the folder's basename and
-`<hash>` is the first 8 hex characters of the SHA-256 of its real host path. It is stable for a folder, and
-`~/a/app` and `~/b/app` get different paths, so their Claude, Codex, OpenCode and Pi history and trust
-entries never collide. Paths containing `:` or `,` are refused, since Docker bind mounts cannot express them.
+For `aos <agent> --here`, the container path is `/home/agent/projects/<name>-<hash>`, where `<name>` is the
+folder's basename and `<hash>` is the first 8 hex characters of the SHA-256 of its real host path. It is
+stable for a folder, and `~/a/app` and `~/b/app` get different paths, so their Claude, Codex, OpenCode and Pi
+history and trust entries never collide. Paths containing `:` or `,` are refused, since Docker bind mounts
+cannot express them. A worktree `aos` leased itself gets a container path keyed the same way but off its own
+branch name instead of its host path; see "Worktrees".
 
 Arguments after the agent name go to the agent CLI unchanged:
 
@@ -82,10 +94,72 @@ aos opencode --help
 | Command | What it does |
 | --- | --- |
 | `aos init` | Creates `AOS_ROOT` with an optional `projects/`, `secrets/` (0700), `secrets/env` (0600) and one login directory per agent. Safe to re-run; it resets the secrets permissions. |
-| `aos doctor` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, and which agents have a saved login or keys. |
+| `aos doctor` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, that `treehouse` is on `PATH`, and which agents have a saved login or keys. |
 | `aos image build [docker build args]` | Builds `aos-dev:local` from `docker/Dockerfile` with `AGENT_UID`/`AGENT_GID` set to your Mac user, and labels it with a hash of `docker/`. Launches, logins and `aos doctor` refuse an image whose label does not match the installed aos, so rebuild after upgrading aos. |
 | `aos secrets login <agent> [args]` | Runs the agent's own login flow in a throwaway `aos-dev` container that mounts only that agent's login directory. Extra arguments go to the agent's login command. |
-| `aos claude` / `aos codex` / `aos opencode` / `aos pi` `[args]` | Opens the agent's interactive interface for the current project. |
+| `aos claude` / `aos codex` / `aos opencode` / `aos pi` `[args]` | Leases a fresh worktree from the project's treehouse pool and opens the agent's interactive interface in it. See "Worktrees". |
+| `aos claude --here` / etc. `[args]` | Opens the agent's interactive interface in the current directory, no worktree. |
+| `aos worktree list` | Lists this project's aos-leased worktrees: id, agent, lease state, branch, clean/dirty, merged/unmerged. |
+| `aos worktree merge <id>` | Merges that worktree's branch, locally, into the branch checked out in the project's main checkout, whichever of its worktrees you run the command from. |
+| `aos worktree rm <id> [--force]` | Returns the lease and deletes the branch. Refuses while an `aos` process is still running an agent in it, or on uncommitted changes or a branch not yet merged into the main checkout's current branch, unless `--force`. Run from the main checkout or any of its worktrees, it checks against the main checkout. |
+| `aos worktree prune` | Runs the same removal as `rm`, without `--force`, on every worktree that is already merged and clean, skipping any an `aos` process is still running an agent in. |
+
+## Worktrees
+
+`aos <agent>` (without `--here`) leases a worktree from the project's
+[treehouse](https://github.com/kunchenguid/treehouse) pool, checks out a fresh branch under `aos/` on it
+(`aos/<agent>/<timestamp>-<random>`), and runs the agent there instead of in the directory you ran `aos`
+from. Several agents, or several runs of the same agent, can then work on one project at once, each on its
+own branch and its own files, without waiting on each other or on git status in a shared checkout.
+
+- **Base commit.** The new branch starts from the `HEAD` of wherever you ran `aos` from, not from whatever
+  commit treehouse happened to leave the leased worktree on.
+- **The lease stays held.** Unlike a plain `treehouse get`, `aos` never returns the lease when the agent's
+  session ends: the worktree and its branch are kept until you explicitly run `aos worktree rm` (or
+  `prune`), so treehouse's own prune and destroy leave it alone in the meantime. Landing the work: run
+  `aos worktree merge <id>` to merge it into the branch checked out in your main checkout, then
+  `aos worktree rm <id>` to release the lease and delete the now-merged branch. `aos worktree prune` does
+  both steps for every worktree that already qualifies.
+- **Resume and continue land you back in the right worktree, automatically.** Claude's `-r`/`--resume`/`-c`/
+  `--continue`, Codex's `resume` subcommand, OpenCode's `-c`/`--session`, and Pi's `-c`/`-r`/`--session[-id]`
+  all scope their own session lookup to the directory the agent is running in, so `aos` detects those flags
+  and picks a worktree for you instead of leasing a new one, so there is no separate `aos` session flag to remember or
+  pass. Long flags are recognised in both `--flag value` and `--flag=value` form:
+  - **An explicit session id** (`claude --resume <id>`, `codex resume <id>`, `opencode --session <id>`,
+    `pi --session <id>`/`--session-id <id>`) is looked up in that agent's own history under
+    `~/AgenticOS/secrets/<agent>/` on the host (the same place a launch mounts into the container) and
+    mapped back to whichever worktree it belongs to, however old. A session that ran in the project's own
+    checkout instead (started with `--here`, or before worktree support) resumes there, exactly as `--here`
+    would, without leasing anything. This works for Claude, Codex and Pi, whose
+    history is either indexed by session id on disk (Claude, Codex) or laid out one directory per worktree
+    the same way (Pi). **OpenCode keeps its sessions in a single SQLite database with no documented
+    per-session-id index**, so `aos` cannot map an explicit `--session <id>` to a worktree reliably; it falls
+    back to the most recently used OpenCode worktree instead and says so on stderr. If the id truly isn't the
+    most recent one, `cd` into the right worktree (`aos worktree list` prints its path) and run
+    `aos opencode --session <id> --here` from inside it.
+  - **A bare flag with no id** (`-c`/`--continue`, or `--resume`/`-r` with nothing after it) lands you in the
+    most recently used worktree for that agent in this project. A bare `--resume`/`-r` then opens that
+    agent's own picker, which (same as the id lookup above) only lists sessions that ran in that one
+    worktree, not every session you've ever had on this project.
+  - If neither finds an existing worktree for this project and agent, `aos` says so on stderr and leases a
+    new one, same as a plain launch.
+- **Container path.** Each worktree's container path (`/home/agent/projects/<name>-<hash>`) is hashed from
+  its own `aos/` branch name, not from the worktree's host path. treehouse reuses the same host directory for
+  later, unrelated leases once one is returned, and since the container path is what keys Claude, Codex,
+  OpenCode and Pi's own history, this keeps a later, unrelated session in a reused pool slot from ever
+  landing in an earlier one's conversation.
+- **`--here` is unaffected.** `aos <agent> --here` never leases a worktree, never creates a branch, and its
+  resume/continue flags behave exactly as they did before worktree support: scoped to whatever directory you
+  ran it from.
+- **Config file.** treehouse's own `treehouse.toml` (`treehouse init` to create one) controls where the pool
+  lives and how large it grows; `aos` does not manage that file. Without one, treehouse uses its own
+  defaults.
+- **Out of scope.** `aos` does not open a PR, push anywhere, or touch the repository's remote; "merge" is a
+  local `git merge`, same as you'd run by hand, and every host git call `aos worktree merge/rm/prune` makes
+  runs with the same hook and fsmonitor protection described in "Warning: host git in agent-written
+  projects" below. Worktrees narrow the blast radius of a bad edit to their own branch, but a leased
+  worktree's `.git` is still the project's real, shared one, and `aos` adds no other git-tampering
+  protection beyond that.
 
 ## Subscriptions and API keys
 
@@ -203,7 +277,8 @@ API keys passed to it, and write anything in the project. See "Deliberately skip
 ## Warning: host git in agent-written projects
 
 Agents can write anything into a project, including `.git/config`, `.git/hooks/*` and files that git runs
-filters or an fsmonitor on. `aos` itself runs git on the Mac for Sandcastle with
+filters or an fsmonitor on. Every host git call `aos` itself makes, for Sandcastle and for its own worktree
+commands (`aos worktree merge/rm/prune`, and branch setup on a fresh worktree), runs with
 `core.hooksPath=/dev/null` and `core.fsmonitor=false`, but your own git commands, editor integrations and
 tools such as `gh` or `pre-commit` do not.
 

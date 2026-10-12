@@ -21,12 +21,28 @@ const KEPT_HOST_VARS = new Set([
 const TERMINAL_VARS = ["COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
 
 /**
+ * Env additions that stop a `git` process from running a repository's own hooks or spawning an
+ * fsmonitor daemon, via the `GIT_CONFIG_*` env vars git reads as if they were `-c` overrides.
+ * Shared by every host-side git call aos makes, directly or through Sandcastle, so a hook an agent
+ * committed into a project (including one of its own worktrees) never runs on the Mac.
+ */
+export function hookSafeGitEnv(): Record<string, string> {
+  return {
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: "core.hooksPath",
+    GIT_CONFIG_VALUE_0: "/dev/null",
+    GIT_CONFIG_KEY_1: "core.fsmonitor",
+    GIT_CONFIG_VALUE_1: "false",
+  };
+}
+
+/**
  * Environment for the aos process while it drives Sandcastle and Docker.
  *
  * Sandcastle copies host variables named in a project's `.sandcastle/.env`
  * into the container, so everything except what Docker needs is dropped.
- * Sandcastle also runs host git in the project; the GIT_CONFIG_* entries keep
- * that git from running repository hooks or an fsmonitor daemon.
+ * Sandcastle also runs host git in the project; `hookSafeGitEnv` keeps that
+ * git from running repository hooks or an fsmonitor daemon.
  */
 export function sandcastleHostEnv(hostEnv: NodeJS.ProcessEnv, home = homedir()): Record<string, string> {
   const env: Record<string, string> = {};
@@ -35,11 +51,7 @@ export function sandcastleHostEnv(hostEnv: NodeJS.ProcessEnv, home = homedir()):
   }
   Object.assign(env, dockerEndpointEnv(env, home));
   env.DOCKER_CLI_HINTS = "false";
-  env.GIT_CONFIG_COUNT = "2";
-  env.GIT_CONFIG_KEY_0 = "core.hooksPath";
-  env.GIT_CONFIG_VALUE_0 = "/dev/null";
-  env.GIT_CONFIG_KEY_1 = "core.fsmonitor";
-  env.GIT_CONFIG_VALUE_1 = "false";
+  Object.assign(env, hookSafeGitEnv());
   return env;
 }
 

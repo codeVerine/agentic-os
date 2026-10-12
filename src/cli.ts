@@ -8,6 +8,7 @@ import { initRoot } from "./init.ts";
 import { launchAgent } from "./launch.ts";
 import { loginAgent } from "./login.ts";
 import { aosPaths, aosRoot } from "./paths.ts";
+import { worktreeCommand } from "./worktreeCli.ts";
 
 const USAGE = `Usage: aos <command>
 
@@ -15,12 +16,19 @@ const USAGE = `Usage: aos <command>
   aos doctor                        Check Docker, the aos-dev image, and per-agent secrets
   aos image build [docker args]     Build the aos-dev:local image for this Mac user
   aos secrets login <agent> [args]  Run the agent's own login inside the container and keep it
-  aos <agent> [args]                Open the agent's own interface for the current project
-                                    (agents: ${AGENT_NAMES.join(", ")})
+  aos <agent> [args]                Lease a fresh treehouse worktree and open the agent's own
+                                    interface in it (agents: ${AGENT_NAMES.join(", ")})
+  aos <agent> --here [args]         Same, but run in the current directory with no worktree
+  aos worktree <list|merge|rm|prune> [args]
+                                    Manage this project's aos-leased worktrees; run without args
+                                    for details
 
 Agents run inside a Sandcastle Docker sandbox. Run agent commands from any
 directory inside a git repository with at least one commit; arguments after
-the agent name go to the agent CLI.`;
+the agent name go to the agent CLI. Each launch gets its own git worktree from
+the project's treehouse pool, on a fresh branch under aos/; an agent's own
+resume/continue flags land back in the worktree that conversation belongs to.
+"aos <agent> --here" skips worktrees and runs in the current repository.`;
 
 async function main(argv: readonly string[]): Promise<number> {
   const hostEnv = { ...process.env };
@@ -53,6 +61,8 @@ async function main(argv: readonly string[]): Promise<number> {
       }
       return loginAgent(agentSpec(agent), args, paths, hostEnv);
     }
+    case "worktree":
+      return worktreeCommand(rest, process.cwd(), paths);
     default:
       throw new AosError(`Unknown command "${command}".\n\n${USAGE}`);
   }
