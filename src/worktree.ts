@@ -2,11 +2,19 @@ import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentName } from "./agents.ts";
-import { checkoutNewBranch, deleteBranch, detachWorktree, git } from "./git.ts";
+import { AosError } from "./errors.ts";
+import { checkoutNewBranch, deleteBranch, git } from "./git.ts";
 import { assertGitMetadataMountable, type AosPaths, type ProjectLocation, sandboxName } from "./paths.ts";
 import { projectKey, readRegistry, type WorktreeRecord, withRegistryLock } from "./registry.ts";
 import { detectResumeIntent, extractExplicitSessionId, findWorktreeForSession, mostRecentlyUsed } from "./resume.ts";
-import { assertTreehouseInstalled, leaseWorktree, returnWorktree } from "./treehouse.ts";
+import {
+  assertTreehouseInstalled,
+  leaseEnded,
+  leaseWorktree,
+  liveHolderPid,
+  returnWorktree,
+  treehouseStatus,
+} from "./treehouse.ts";
 
 export interface WorktreeTarget {
   readonly hostRoot: string;
@@ -55,17 +63,27 @@ export async function resolveWorktreeTarget(
     }
 
     if (picked && existsSync(picked.worktreePath)) {
-      await withRegistryLock(paths, key, (all) => {
-        const record = all.find((r) => r.id === picked?.id);
-        if (record) {
-          record.lastUsedAt = new Date().toISOString();
-          record.activePid = process.pid;
-        }
-        return { records: all, value: undefined };
-      });
-      return { hostRoot: picked.worktreePath, sandboxName: picked.sandboxName, branch: picked.branch };
-    }
-    if (picked) console.error(`aos: the worktree for that ${agentName} session is gone from disk; leasing a new one.`);
+      const status = treehouseStatus(project.root);
+      const pid = liveHolderPid(picked, status);
+      if (pid !== undefined) {
+        throw new AosError(
+          `The ${agentName} worktree ${picked.id} (${picked.branch}) is in use by running aos process ${pid}. Exit that session first, or start a new one without a resume flag.`,
+        );
+      }
+      if (leaseEnded(picked, status)) {
+        console.error(`aos: the treehouse lease of that ${agentName} worktree ended outside aos, so its folder may belong to another session now; leasing a new one.`);
+      } else {
+        await withRegistryLock(paths, key, (all) => {
+          const record = all.find((r) => r.id === picked?.id);
+          if (record) {
+            record.lastUsedAt = new Date().toISOString();
+            record.activePid = process.pid;
+          }
+          return { records: all, value: undefined };
+        });
+        return { hostRoot: picked.worktreePath, sandboxName: picked.sandboxName, branch: picked.branch };
+      }
+    } else if (picked) console.error(`aos: the worktree for that ${agentName} session is gone from disk; leasing a new one.`);
     else if (!explicitId) console.error(`aos: no existing ${agentName} worktree found for this project yet; leasing a new one.`);
   }
 
@@ -93,7 +111,7 @@ export async function resolveWorktreeTarget(
     await withRegistryLock(paths, key, (records) => ({ records: [...records, record], value: undefined }));
     return { hostRoot: record.worktreePath, sandboxName: record.sandboxName, branch: record.branch };
   } catch (error) {
-    releaseUnregisteredLease(project.root, lease.path, branchCreated ? branch : undefined);
+    releaseUnregisteredLease(project.root, lease, branchCreated ? branch : undefined);
     throw error;
   }
 }
@@ -111,10 +129,9 @@ export function containerWorkdir(sandboxProjectRoot: string, hostRoot: string, s
 }
 
 /** Undoes a lease whose setup failed before it was registered, so the pool never leaks it. */
-function releaseUnregisteredLease(mainRoot: string, worktreePath: string, branch: string | undefined): void {
-  const steps = branch
-    ? [() => detachWorktree(worktreePath), () => returnWorktree(worktreePath), () => deleteBranch(mainRoot, branch, true)]
-    : [() => returnWorktree(worktreePath)];
+function releaseUnregisteredLease(mainRoot: string, lease: { path: string; leaseId: string }, branch: string | undefined): void {
+  const steps = [() => returnWorktree(lease.path, lease.leaseId)];
+  if (branch) steps.push(() => deleteBranch(mainRoot, branch, true));
   for (const step of steps) {
     try {
       step();

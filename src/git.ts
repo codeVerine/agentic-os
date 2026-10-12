@@ -69,17 +69,6 @@ export function checkoutNewBranch(worktreePath: string, branch: string, baseRev:
   if (result.status !== 0) throw new AosError(`Could not create branch ${branch} in ${worktreePath}: ${result.stderr.trim()}`);
 }
 
-/**
- * `treehouse return` releases the lease but leaves the worktree checked out on its branch, so
- * deleting that branch afterward would fail with "used by worktree". Detaching first (always
- * possible: the target tree is the current commit, so it never conflicts with local changes)
- * frees the branch name for `deleteBranch` while leaving everything else in the worktree alone.
- */
-export function detachWorktree(worktreePath: string): void {
-  const result = spawnGit(["-C", worktreePath, "checkout", "-q", "--detach"]);
-  if (result.status !== 0) throw new AosError(`Could not detach ${worktreePath} from its branch: ${result.stderr.trim()}`);
-}
-
 export function mergeLocally(mainRoot: string, branch: string): void {
   const result = spawnGit(["-C", mainRoot, "merge", "--no-edit", branch]);
   if (result.status !== 0) throw new AosError(`git merge ${branch} failed in ${mainRoot}: ${(result.stderr || result.stdout).trim()}`);

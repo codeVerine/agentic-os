@@ -50,8 +50,16 @@ export function leaseWorktree(cwd: string, holder: string): { path: string; leas
   return { path: parsed.path, leaseId: parsed.lease_id };
 }
 
-export function returnWorktree(worktreePath: string): void {
-  const result = spawnSync(TREEHOUSE_CMD, ["return", worktreePath, "--force"], { encoding: "utf8", env: treehouseEnv() });
+/**
+ * Returns the worktree to the pool, which detaches it and discards everything uncommitted. Only done
+ * when `leaseId` is still the lease on that folder: treehouse reuses a folder for later leases, so a
+ * lease that ended outside aos must never take back the next session's work.
+ */
+export function returnWorktree(worktreePath: string, leaseId: string): void {
+  const result = spawnSync(TREEHOUSE_CMD, ["return", worktreePath, "--force", "--if-lease-id", leaseId], {
+    encoding: "utf8",
+    env: treehouseEnv(),
+  });
   if (result.status !== 0) throw new AosError(`treehouse return ${worktreePath} failed: ${(result.stderr || result.stdout).trim()}`);
 }
 
@@ -74,6 +82,12 @@ export function treehouseStatus(cwd: string): TreehouseStatusEntry[] | undefined
   }
 }
 
+/** Treehouse lists the folder under a different lease, so it may now belong to another session. */
+export function leaseEnded(record: WorktreeRecord, status: readonly TreehouseStatusEntry[] | undefined): boolean {
+  const entry = status?.find((e) => e.path === record.worktreePath);
+  return entry !== undefined && entry.lease_id !== record.leaseId;
+}
+
 /**
  * pid of a still-running aos process using this worktree: the `aos-<pid>` that holds its treehouse
  * lease, or the one that last resumed it. rm and prune must never take such a worktree back. Both
@@ -83,7 +97,8 @@ export function treehouseStatus(cwd: string): TreehouseStatusEntry[] | undefined
  * keeping a worktree rather than taking back one an agent may still be using.
  */
 export function liveHolderPid(record: WorktreeRecord, status: readonly TreehouseStatusEntry[] | undefined): number | undefined {
-  const holder = status?.find((e) => e.path === record.worktreePath)?.lease_holder;
+  const entry = status?.find((e) => e.path === record.worktreePath);
+  const holder = entry?.lease_id === record.leaseId ? entry.lease_holder : undefined;
   const leasePid = holder?.startsWith("aos-") ? Number(holder.slice("aos-".length)) : undefined;
   if (leasePid !== undefined && startedBy(leasePid, record.createdAt)) return leasePid;
   if (record.activePid !== undefined && startedBy(record.activePid, record.lastUsedAt)) return record.activePid;

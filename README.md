@@ -110,7 +110,7 @@ aos opencode --help
 | `aos claude --here` / etc. `[args]` | Opens the agent's interactive interface in the current directory, no worktree. |
 | `aos worktree list` | Lists this project's aos-leased worktrees: id, agent, lease state, branch, clean/dirty, merged/unmerged. |
 | `aos worktree merge <id>` | Merges that worktree's branch, locally, into the branch checked out in the project's main checkout, whichever of its worktrees you run the command from. |
-| `aos worktree rm <id> [--force]` | (Also spelled `remove`.) Returns the lease and deletes the branch. Refuses while an `aos` process is still running an agent in it, or on uncommitted changes or a branch not yet merged into the main checkout's current branch, unless `--force`. Run from the main checkout or any of its worktrees, it checks against the main checkout. |
+| `aos worktree rm <id> [--force]` | (Also spelled `remove`.) Returns the lease and deletes the branch. Refuses while an `aos` process is still running an agent in it, or on uncommitted changes or a branch not yet merged into the main checkout's current branch, unless `--force`. Run from the main checkout or any of its worktrees, it checks against the main checkout. A worktree whose treehouse lease already ended outside `aos` is left alone, since its folder may now belong to another session; only its record and branch are removed. |
 | `aos worktree prune` | Runs the same removal as `rm`, without `--force`, on every worktree that is already merged and clean, skipping any an `aos` process is still running an agent in. |
 
 ## Worktrees
@@ -152,6 +152,10 @@ own branch and its own files, without waiting on each other or on git status in 
     worktree, not every session you've ever had on this project.
   - If neither finds an existing worktree for this project and agent, `aos` says so on stderr and leases a
     new one, same as a plain launch.
+  - A worktree that another `aos` process is still running an agent in is refused, with that process's pid
+    in the message, because two agents in one worktree would edit the same files and write the same
+    transcript. One whose treehouse lease ended outside `aos` is not resumed either: treehouse may have
+    given its folder to another session, so `aos` leases a new worktree instead.
 - **Container path.** Each worktree's container path (`/home/agent/projects/<name>-<hash>`) is hashed from
   the project and its own `aos/` branch name, not from the worktree's host path. treehouse reuses the same
   host directory for later, unrelated leases once one is returned, and since the container path is what keys

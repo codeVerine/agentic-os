@@ -10,8 +10,11 @@ import { initCommittedRepo } from "./helpers.ts";
 
 // A fake treehouse binary lets these tests exercise the lease and return paths without the real CLI
 // installed. It logs every call, leases whatever path AOS_FAKE_LEASE_PATH names, reports
-// AOS_FAKE_STATUS as its pool status, and fails `return` for any path containing "fail-return". The env var must be set before treehouse.ts is first
-// evaluated, which worktree.ts does on import, so worktree.ts is imported dynamically below.
+// AOS_FAKE_STATUS as its pool status, and fails `return` for any path containing "fail-return".
+// Like the real one, `return` detaches the worktree and refuses when --if-lease-id differs from the
+// current lease (AOS_FAKE_LEASE_ID, "fake-lease" by default). The env var must be set before
+// treehouse.ts is first evaluated, which worktree.ts does on import, so worktree.ts is imported
+// dynamically below.
 const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-worktree-cli-")));
 after(() => rmSync(base, { recursive: true, force: true }));
 
@@ -25,7 +28,17 @@ echo "$@" >> "${treehouseLog}"
 echo "$TREEHOUSE_ROOT" >> "${treehouseRootLog}"
 case "$1" in
   get) printf '{"path":"%s","lease_id":"fake-lease"}\\n' "$AOS_FAKE_LEASE_PATH" ;;
-  return) case "$2" in *fail-return*) echo "return refused" >&2; exit 1 ;; esac ;;
+  return)
+    case "$2" in *fail-return*) echo "return refused" >&2; exit 1 ;; esac
+    path=$2
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--if-lease-id" ] && [ "$2" != "\${AOS_FAKE_LEASE_ID:-fake-lease}" ]; then
+        echo "failed to return worktree: lease precondition failed: lease identity does not match worktree $path" >&2
+        exit 1
+      fi
+      shift
+    done
+    git -C "$path" checkout -q --detach 2>/dev/null ;;
   status) printf '%s\\n' "\${AOS_FAKE_STATUS:-[]}" ;;
 esac
 exit 0
@@ -302,6 +315,80 @@ describe("aos worktree rm/prune with a still-running agent", () => {
   });
 });
 
+describe("a worktree whose treehouse lease ended outside aos", () => {
+  const returnCalls = (): number => treehouseCalls().filter((call) => call.startsWith("return")).length;
+  const leasedTo = (record: WorktreeRecord, leaseId: string): string =>
+    JSON.stringify([{ name: record.id, path: record.worktreePath, status: "leased", lease_id: leaseId, lease_holder: "aos-999999999" }]);
+  after(() => {
+    delete process.env.AOS_FAKE_STATUS;
+    delete process.env.AOS_FAKE_LEASE_ID;
+  });
+
+  test("rm --force leaves the folder and the branch checked out in it alone", async () => {
+    const r = repo("stale-rm");
+    const record = branchWorktree(r, "stale-rm-1");
+    await seed(r, record);
+    writeFileSync(join(record.worktreePath, "other-session.txt"), "uncommitted work of the folder's new lease");
+    process.env.AOS_FAKE_STATUS = leasedTo(record, "someone-elses-lease");
+    const before = returnCalls();
+
+    assert.equal(await worktreeCommand(["rm", record.id, "--force"], r.main, r.paths), 0);
+
+    assert.equal(returnCalls(), before);
+    assert.ok(existsSync(join(record.worktreePath, "other-session.txt")));
+    const head = execFileSync("git", ["-C", record.worktreePath, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" });
+    assert.equal(head.trim(), record.branch);
+    assert.equal(readRegistry(r.paths, r.key).length, 0);
+  });
+
+  test("treehouse's own lease check stops a return when the pool status could not say", async () => {
+    const r = repo("stale-return");
+    const record = branchWorktree(r, "stale-return-1");
+    await seed(r, record);
+    writeFileSync(join(record.worktreePath, "other-session.txt"), "uncommitted work of the folder's new lease");
+    delete process.env.AOS_FAKE_STATUS;
+    process.env.AOS_FAKE_LEASE_ID = "someone-elses-lease";
+
+    await assert.rejects(worktreeCommand(["rm", record.id, "--force"], r.main, r.paths), /lease precondition failed/);
+
+    assert.ok(existsSync(join(record.worktreePath, "other-session.txt")));
+    const head = execFileSync("git", ["-C", record.worktreePath, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" });
+    assert.equal(head.trim(), record.branch);
+    assert.equal(readRegistry(r.paths, r.key).length, 1);
+    delete process.env.AOS_FAKE_LEASE_ID;
+  });
+
+  test("resume leases a new worktree instead of entering the folder", async () => {
+    const r = repo("stale-resume");
+    const record = branchWorktree(r, "stale-resume-1");
+    await seed(r, record);
+    process.env.AOS_FAKE_STATUS = leasedTo(record, "someone-elses-lease");
+    const leased = join(base, "stale-resume-slot");
+    execFileSync("git", ["-C", r.main, "worktree", "add", "--quiet", "--detach", leased]);
+    process.env.AOS_FAKE_LEASE_PATH = leased;
+
+    const target = await resolveWorktreeTarget("claude", ["--continue"], locateProject(r.main), r.paths, join(base, "stale-resume-agent"));
+
+    assert.equal(target.hostRoot, leased);
+  });
+});
+
+describe("resuming into a worktree another aos session is running in", () => {
+  after(() => delete process.env.AOS_FAKE_STATUS);
+
+  test("is refused with the pid of the running session", async () => {
+    const r = repo("resume-live");
+    const record = { ...branchWorktree(r, "resume-live-1"), activePid: process.pid };
+    await seed(r, record);
+    heldByThisProcess(record);
+
+    await assert.rejects(
+      resolveWorktreeTarget("claude", ["--continue"], locateProject(r.main), r.paths, join(base, "resume-live-agent")),
+      new RegExp(`is in use by running aos process ${process.pid}`),
+    );
+  });
+});
+
 describe("resolveWorktreeTarget", () => {
   test("returns the lease and deletes the new branch when setup fails after leasing", async () => {
     const r = repo("lease-leak");
@@ -313,7 +400,7 @@ describe("resolveWorktreeTarget", () => {
 
     await assert.rejects(resolveWorktreeTarget("claude", [], locateProject(r.main), r.paths, join(base, "lease-leak-agent")));
 
-    assert.ok(treehouseCalls().includes(`return ${leased} --force`));
+    assert.ok(treehouseCalls().includes(`return ${leased} --force --if-lease-id fake-lease`));
     const branches = execFileSync("git", ["-C", r.main, "branch", "--list", "aos/*"], { encoding: "utf8" });
     assert.equal(branches.trim(), "");
   });

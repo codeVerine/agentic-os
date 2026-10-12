@@ -65,6 +65,11 @@ baseline:
   drivers, filters and commit signing.
 - `checkoutNewBranch` and treehouse's own lease checkout write files, which runs smudge filters. Not
   lab-tested; same mechanism.
+- `treehouse get`, which every `aos <agent>` launch without `--here` runs, fetches from `origin` in the
+  shared repository first. Lab-tested with treehouse v2.3.0 and an `ssh://` origin: a `core.sshCommand`
+  planted in the shared `.git/config` ran on the Mac and created its marker. `core.gitProxy` and
+  `core.askPass` go through the same fetch and are not lab-tested. Unlike `aos worktree`, this runs on
+  every launch, not only when the user inspects worktrees.
 
 More `GIT_CONFIG_*` overrides are not a robust fix. The fix in the proposed design is to refuse to run host
 git in a repository whose git configuration is not the approved one.

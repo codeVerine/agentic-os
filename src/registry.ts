@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import type { AgentName } from "./agents.ts";
 import { AosError } from "./errors.ts";
-import { writePrivateFileAtomic } from "./fsutil.ts";
+import { withFileLock, writePrivateFileAtomic } from "./fsutil.ts";
 import { type AosPaths, gitCommonDir } from "./paths.ts";
 
 /** A worktree aos leased from treehouse for one agent run, tracked for its whole life. */
@@ -28,8 +27,6 @@ export interface WorktreeRecord {
   /** pid of the aos process that last launched an agent here, which may outlive the original lease holder. */
   activePid?: number;
 }
-
-const STALE_LOCK_MS = 10_000;
 
 /** Stable identity for "this repository", the same from the main checkout or any of its worktrees. */
 export function projectKey(root: string): string {
@@ -65,30 +62,9 @@ export async function withRegistryLock<T>(
   update: (records: WorktreeRecord[]) => { records: WorktreeRecord[]; value: T },
 ): Promise<T> {
   mkdirSync(paths.worktrees, { recursive: true });
-  const lock = join(paths.worktrees, `${key}.lock`);
-  await acquireLock(lock);
-  try {
+  return withFileLock(join(paths.worktrees, `${key}.lock`), async () => {
     const { records, value } = update(readRegistry(paths, key));
     writeRegistry(paths, key, records);
     return value;
-  } finally {
-    rmSync(lock, { recursive: true, force: true });
-  }
-}
-
-async function acquireLock(lock: string): Promise<void> {
-  for (;;) {
-    try {
-      mkdirSync(lock);
-      return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-    try {
-      if (Date.now() - statSync(lock).mtimeMs > STALE_LOCK_MS) rmSync(lock, { recursive: true, force: true });
-    } catch {
-      // Another process cleared it first; keep polling.
-    }
-    await sleep(50);
-  }
+  });
 }

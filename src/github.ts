@@ -1,4 +1,4 @@
-import { createPrivateKey, createSign, randomBytes, type KeyObject } from "node:crypto";
+import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
 import {
   closeSync,
   constants as fsConstants,
@@ -10,24 +10,21 @@ import {
   readSync,
   renameSync,
   rmSync,
-  statSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { AosError } from "./errors.ts";
-import { assertPrivate, ensurePrivateDir, writePrivateFileAtomic } from "./fsutil.ts";
+import { assertPrivate, ensurePrivateDir, withFileLock, writePrivateFileAtomic } from "./fsutil.ts";
 import { spawnGit } from "./git.ts";
 import { GITHUB_APP_ID_KEY, GITHUB_APP_KEY_FILE_KEY, type SecretsEnv } from "./secrets.ts";
 
 export const GITHUB_API_URL = "https://api.github.com";
 const API_VERSION = "2022-11-28";
+/** Short enough that a stalled GitHub fails the one request instead of the whole 90 seconds the container waits. */
+const API_TIMEOUT_MS = 20_000;
 /** One token per repository is shared by every session; it is replaced when less than this remains. */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
-const LOCK_STALE_MS = 30_000;
-const LOCK_TIMEOUT_MS = 60_000;
 const POLL_MS = 100;
 const REQUEST_ID = /^[0-9a-f]{32}$/;
 const MAX_REQUEST_BYTES = 4096;
@@ -155,6 +152,7 @@ export async function githubFetch(url: string, init: { method: string; headers?:
   try {
     return await fetch(url, {
       ...init,
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
       headers: {
         Accept: "application/vnd.github+json",
         "User-Agent": "aos",
@@ -253,39 +251,6 @@ function readCache(file: string, appId: string, nowMs: number): string | undefin
   }
 }
 
-function lockOwner(lockPath: string): string | undefined {
-  try {
-    return readFileSync(lockPath, "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-async function withLock<T>(lockPath: string, run: () => Promise<T>): Promise<T> {
-  const owner = randomBytes(16).toString("hex");
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  for (;;) {
-    try {
-      writeFileSync(lockPath, owner, { flag: "wx", mode: 0o600 });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      try {
-        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) unlinkSync(lockPath);
-      } catch {
-        // The holder released it between the checks; try to take it again.
-      }
-      if (Date.now() > deadline) throw new AosError(`Timed out waiting for another aos session to mint a token (${lockPath}).`);
-      await sleep(50);
-    }
-  }
-  try {
-    return await run();
-  } finally {
-    if (lockOwner(lockPath) === owner) rmSync(lockPath, { force: true });
-  }
-}
-
 /**
  * The token for `repo`, shared through `tokensDir` by every aos process on this Mac. It is minted
  * under a file lock so parallel sessions of one repository mint once, and again only when less
@@ -302,7 +267,7 @@ export async function tokenForRepo(
   const cached = readCache(file, config.appId, now());
   if (cached !== undefined) return cached;
   ensurePrivateDir(tokensDir);
-  return withLock(`${file}.lock`, async () => {
+  return withFileLock(`${file}.lock`, async () => {
     const raced = readCache(file, config.appId, now());
     if (raced !== undefined) return raced;
     const minted = await mintInstallationToken(config, repo, options);
