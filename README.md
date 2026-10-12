@@ -27,7 +27,8 @@ repository directly, the way earlier versions of `aos` always did. See "Worktree
   the agent exits non-zero, and on Ctrl-C, `SIGTERM` or a closed terminal (`SIGHUP`). `aos` finds the
   container by a per-launch mount, so it never touches another session's container. A launch whose `aos`
   process is killed with `SIGKILL`, or whose Mac loses power, cannot clean up and leaves its container
-  behind; `aos doctor --clean` removes the stopped ones (see "Commands"). A launch killed while its container is still being created can also leave a container that `doctor` does not list; remove it with `docker rm`.
+  behind; `aos doctor --clean` removes the stopped ones (see "Commands"). A launch killed while its container
+  is still being created can also leave a container that `doctor` does not list; remove it with `docker rm`.
 - Each agent logs in once, inside a container. That login is stored under `~/AgenticOS/secrets/<agent>/` and
   shared by every project, so the Mac's own agent logins are never touched, and a token refreshed in a
   container never logs the Mac's own tools out.
@@ -50,7 +51,7 @@ npm link               # puts `aos` on your PATH
 
 aos init               # creates ~/AgenticOS/{secrets,projects}; secrets/ is mode 0700
 aos image build        # builds aos-dev:local with your Mac UID/GID (a few minutes the first time)
-aos doctor             # checks Docker, the image, and each agent's login and keys
+aos doctor             # checks Docker, the image, each agent's login and keys, and leftover containers
 
 aos secrets login codex      # once per agent you want to use (see below)
 aos secrets login claude
