@@ -1,7 +1,9 @@
-import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
+import { createPrivateKey, createSign, randomBytes, type KeyObject } from "node:crypto";
 import {
   closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -227,11 +229,20 @@ function readCache(file: string, appId: string, nowMs: number): string | undefin
 
 const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
+function lockOwner(lockPath: string): string | undefined {
+  try {
+    return readFileSync(lockPath, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 async function withLock<T>(lockPath: string, run: () => Promise<T>): Promise<T> {
+  const owner = randomBytes(16).toString("hex");
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   for (;;) {
     try {
-      closeSync(openSync(lockPath, "wx", 0o600));
+      writeFileSync(lockPath, owner, { flag: "wx", mode: 0o600 });
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -247,7 +258,7 @@ async function withLock<T>(lockPath: string, run: () => Promise<T>): Promise<T> 
   try {
     return await run();
   } finally {
-    rmSync(lockPath, { force: true });
+    if (lockOwner(lockPath) === owner) rmSync(lockPath, { force: true });
   }
 }
 
@@ -347,6 +358,16 @@ export function prepareGithubAccess(options: GithubAccessOptions): GithubAccess 
   const allowed = remote.repo;
   const inFlight = new Set<string>();
 
+  const readRequest = (file: string): CredentialRequest => {
+    const fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    try {
+      if (!fstatSync(fd).isFile()) throw new AosError(`${file} is not a regular file.`);
+      return JSON.parse(readFileSync(fd, "utf8")) as CredentialRequest;
+    } finally {
+      closeSync(fd);
+    }
+  };
+
   const answer = async (request: CredentialRequest): Promise<CredentialResponse> => {
     if (request.host !== undefined && request.host !== "github.com") {
       return { ok: false, message: `aos only gives access to github.com, not ${String(request.host)}.` };
@@ -368,13 +389,14 @@ export function prepareGithubAccess(options: GithubAccessOptions): GithubAccess 
     const requestFile = join(spool, `${id}.req`);
     let response: CredentialResponse;
     try {
-      response = await answer(JSON.parse(readFileSync(requestFile, "utf8")) as CredentialRequest);
-    } catch (error) {
-      response = { ok: false, message: `aos could not answer the request: ${(error as Error).message}` };
+      response = await answer(readRequest(requestFile));
+    } catch {
+      response = { ok: false, message: "aos could not answer the request." };
     }
     rmSync(requestFile, { force: true });
     const staging = join(spool, `${id}.res.tmp`);
-    writeFileSync(staging, JSON.stringify(response), { mode: 0o600 });
+    rmSync(staging, { force: true });
+    writeFileSync(staging, JSON.stringify(response), { mode: 0o600, flag: "wx" });
     renameSync(staging, join(spool, `${id}.res`));
   };
 

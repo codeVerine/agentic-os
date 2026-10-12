@@ -161,7 +161,8 @@ own branch and its own files, without waiting on each other or on git status in 
 - **Config file.** treehouse's own `treehouse.toml` (`treehouse init` to create one) controls where the pool
   lives and how large it grows; `aos` does not manage that file. Without one, treehouse uses its own
   defaults.
-- **Out of scope.** `aos` does not open a PR, push anywhere, or touch the repository's remote; "merge" is a
+- **Out of scope.** The host `aos` commands do not open a PR, push anywhere, or touch the repository's remote.
+  Agents can pull, push and open PRs through their own GitHub access ("GitHub access" below); "merge" is a
   local `git merge`, same as you'd run by hand, and every host git call `aos worktree merge/rm/prune` makes
   runs with the same hook and fsmonitor protection described in "Warning: host git in agent-written
   projects" below. Worktrees narrow the blast radius of a bad edit to their own branch, but a leased
