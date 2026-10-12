@@ -70,8 +70,9 @@ Run the launchers from any directory inside a git repository, wherever it lives;
 only a convenient optional place for projects. The project is the git repository root of the directory you run
 `aos` in. Only that folder is mounted into the container (or, without `--here`, only the worktree `aos` leased
 for it). The agent starts in the same subdirectory you ran it from, or at the worktree root when that
-subdirectory does not exist in the worktree, such as an untracked or ignored directory. The repository needs at least one commit (a Sandcastle requirement); a directory outside a git
-repository is refused and `aos` never runs `git init` for you.
+subdirectory does not exist in the worktree, such as an untracked or ignored directory. The repository needs
+at least one commit (a Sandcastle requirement); a directory outside a git repository is refused and `aos`
+never runs `git init` for you.
 
 A linked worktree (`git worktree add`, including one `aos` itself leased from treehouse) works as the
 launch directory too: Sandcastle also mounts the main repository's `.git` at its host path so git inside the
@@ -109,7 +110,7 @@ aos opencode --help
 | `aos claude --here` / etc. `[args]` | Opens the agent's interactive interface in the current directory, no worktree. |
 | `aos worktree list` | Lists this project's aos-leased worktrees: id, agent, lease state, branch, clean/dirty, merged/unmerged. |
 | `aos worktree merge <id>` | Merges that worktree's branch, locally, into the branch checked out in the project's main checkout, whichever of its worktrees you run the command from. |
-| `aos worktree rm <id> [--force]` | Returns the lease and deletes the branch. Refuses while an `aos` process is still running an agent in it, or on uncommitted changes or a branch not yet merged into the main checkout's current branch, unless `--force`. Run from the main checkout or any of its worktrees, it checks against the main checkout. |
+| `aos worktree rm <id> [--force]` | (Also spelled `remove`.) Returns the lease and deletes the branch. Refuses while an `aos` process is still running an agent in it, or on uncommitted changes or a branch not yet merged into the main checkout's current branch, unless `--force`. Run from the main checkout or any of its worktrees, it checks against the main checkout. |
 | `aos worktree prune` | Runs the same removal as `rm`, without `--force`, on every worktree that is already merged and clean, skipping any an `aos` process is still running an agent in. |
 
 ## Worktrees
@@ -152,10 +153,10 @@ own branch and its own files, without waiting on each other or on git status in 
   - If neither finds an existing worktree for this project and agent, `aos` says so on stderr and leases a
     new one, same as a plain launch.
 - **Container path.** Each worktree's container path (`/home/agent/projects/<name>-<hash>`) is hashed from
-  its own `aos/` branch name, not from the worktree's host path. treehouse reuses the same host directory for
-  later, unrelated leases once one is returned, and since the container path is what keys Claude, Codex,
-  OpenCode and Pi's own history, this keeps a later, unrelated session in a reused pool slot from ever
-  landing in an earlier one's conversation.
+  the project and its own `aos/` branch name, not from the worktree's host path. treehouse reuses the same
+  host directory for later, unrelated leases once one is returned, and since the container path is what keys
+  Claude, Codex, OpenCode and Pi's own history, this keeps a later, unrelated session in a reused pool slot
+  from ever landing in an earlier one's conversation.
 - **`--here` is unaffected.** `aos <agent> --here` never leases a worktree, never creates a branch, and its
   resume/continue flags behave exactly as they did before worktree support: scoped to whatever directory you
   ran it from.
@@ -400,6 +401,8 @@ merge drivers and `gpg.program` planted in `.git/config` still run on the Mac, i
   `.git/hooks` and `.git/info/attributes` first.
 
 ## Deliberately skipped for now
+
+Planned work that is understood but not built yet is listed in [TODO.md](TODO.md).
 
 This is the MVP's first slice. It skips, on purpose:
 
