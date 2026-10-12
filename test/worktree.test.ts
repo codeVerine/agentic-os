@@ -6,22 +6,12 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { AosError } from "../src/errors.ts";
 import { aosPaths, locateProject } from "../src/paths.ts";
-import {
-  assertTreehouseInstalled,
-  containerWorkdir,
-  deleteBranch,
-  detectResumeIntent,
-  extractExplicitSessionId,
-  findWorktreeForSession,
-  isMergedInto,
-  isWorktreeClean,
-  mergeLocally,
-  mostRecentlyUsed,
-  projectKey,
-  readRegistry,
-  withRegistryLock,
-  type WorktreeRecord,
-} from "../src/worktree.ts";
+import { deleteBranch, isMergedInto, isWorktreeClean, mergeLocally } from "../src/git.ts";
+import { projectKey, readRegistry, withRegistryLock, type WorktreeRecord } from "../src/registry.ts";
+import { detectResumeIntent, extractExplicitSessionId, findWorktreeForSession, mostRecentlyUsed } from "../src/resume.ts";
+import { assertTreehouseInstalled } from "../src/treehouse.ts";
+import { containerWorkdir } from "../src/worktree.ts";
+import { initCommittedRepo } from "./helpers.ts";
 
 describe("detectResumeIntent", () => {
   test("claude: -r/--resume and -c/--continue, not a plain launch", () => {
@@ -108,7 +98,6 @@ describe("findWorktreeForSession", () => {
     branch: `aos/${agent}/${sandbox}`,
     worktreePath: `/tmp/${sandbox}`,
     sandboxName: sandbox,
-    baseRev: "abc",
     createdAt: "now",
     lastUsedAt: "now",
     leaseId: "lease",
@@ -196,7 +185,6 @@ describe("mostRecentlyUsed", () => {
     branch: `aos/${agent}/${lastUsedAt}`,
     worktreePath: `/tmp/${lastUsedAt}`,
     sandboxName: `x-${lastUsedAt}`,
-    baseRev: "abc",
     createdAt: lastUsedAt,
     lastUsedAt,
     leaseId: "lease",
@@ -215,11 +203,7 @@ describe("projectKey and the registry", () => {
   after(() => rmSync(base, { recursive: true, force: true }));
 
   function repo(name: string): string {
-    const dir = join(base, name);
-    mkdirSync(dir);
-    execFileSync("git", ["init", "--quiet", dir]);
-    execFileSync("git", ["-C", dir, "commit", "--quiet", "--allow-empty", "-m", "init"]);
-    return dir;
+    return initCommittedRepo(join(base, name));
   }
 
   test("is the same from the main checkout and a linked worktree, different across repos", () => {
@@ -250,7 +234,6 @@ describe("projectKey and the registry", () => {
       branch: `aos/claude/${id}`,
       worktreePath: `/tmp/${id}`,
       sandboxName: `x-${id}`,
-      baseRev: "abc",
       createdAt: "now",
       lastUsedAt: "now",
       leaseId: "lease",
@@ -274,10 +257,7 @@ describe("git-backed safety checks", () => {
   after(() => rmSync(base, { recursive: true, force: true }));
 
   function setup(name: string): { main: string; worktree: string; branch: string } {
-    const main = join(base, name);
-    mkdirSync(main);
-    execFileSync("git", ["init", "--quiet", main]);
-    execFileSync("git", ["-C", main, "commit", "--quiet", "--allow-empty", "-m", "init"]);
+    const main = initCommittedRepo(join(base, name));
     const branch = `aos/claude/${name}`;
     const worktree = join(base, `${name}-wt`);
     execFileSync("git", ["-C", main, "worktree", "add", "--quiet", "-b", branch, worktree]);

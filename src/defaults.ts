@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AosError } from "./errors.ts";
+import { writePrivateFileAtomic } from "./fsutil.ts";
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
 export interface JsonObject {
@@ -14,7 +15,7 @@ export interface DefaultsFile {
   readonly values: JsonObject;
 }
 
-function isObject(value: JsonValue | undefined): value is JsonObject {
+function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -49,12 +50,10 @@ export function applyDefaults(agentDir: string, defaults: DefaultsFile): void {
     } catch (error) {
       throw new AosError(`${path} is not valid JSON (${(error as Error).message}). Fix or remove it, then run again.`);
     }
-    if (!isObject(parsed as JsonValue)) throw new AosError(`${path} must hold a JSON object.`);
-    existing = parsed as JsonObject;
+    if (!isObject(parsed)) throw new AosError(`${path} must hold a JSON object.`);
+    existing = parsed;
   }
   const { merged, changed } = fillMissing(existing, defaults.values);
   if (!changed) return;
-  const staging = `${path}.aos-${process.pid}.tmp`;
-  writeFileSync(staging, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
-  renameSync(staging, path);
+  writePrivateFileAtomic(path, `${JSON.stringify(merged, null, 2)}\n`);
 }

@@ -5,11 +5,20 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { setTimeout as sleep } from "node:timers/promises";
 import { AosError } from "./errors.ts";
-import { githubSetup, listAppInstallations, TOKEN_PERMISSIONS } from "./github.ts";
+import { ensurePrivateDir } from "./fsutil.ts";
+import {
+  type AppInstallation,
+  type GithubAppConfig,
+  GITHUB_API_URL,
+  githubFetch,
+  githubSetup,
+  listAppInstallations,
+  TOKEN_PERMISSIONS,
+} from "./github.ts";
 import type { AosPaths } from "./paths.ts";
 import {
-  ensurePrivateDir,
   GITHUB_APP_ID_KEY,
   GITHUB_APP_KEY_FILE_KEY,
   readSecretsEnv,
@@ -17,7 +26,7 @@ import {
 } from "./secrets.ts";
 
 const GITHUB_URL = "https://github.com";
-const API_URL = "https://api.github.com";
+const LOGIN = /^[A-Za-z0-9-]+$/;
 const HOMEPAGE = "https://github.com/codeVerine/agentic-os";
 const KEY_FILE_NAME = "github-app.pem";
 
@@ -55,7 +64,7 @@ function defaultOpenUrl(url: string): void {
 function ghLogin(env: NodeJS.ProcessEnv): string | undefined {
   const result = spawnSync("gh", ["api", "user", "--jq", ".login"], { encoding: "utf8", env, timeout: 15_000 });
   const login = result.status === 0 ? result.stdout.trim() : "";
-  return /^[A-Za-z0-9-]+$/.test(login) ? login : undefined;
+  return LOGIN.test(login) ? login : undefined;
 }
 
 async function askLogin(): Promise<string> {
@@ -91,7 +100,7 @@ export function appManifest(name: string, redirectUrl: string): Manifest {
 }
 
 /** The page the browser opens: it posts the manifest to GitHub, which then asks the user to confirm. */
-export function manifestPage(manifest: Manifest, state: string, githubUrl = GITHUB_URL): string {
+function manifestPage(manifest: Manifest, state: string, githubUrl = GITHUB_URL): string {
   const action = `${githubUrl}/settings/apps/new?state=${encodeURIComponent(state)}`;
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>aos GitHub App setup</title></head>
@@ -107,15 +116,7 @@ export function manifestPage(manifest: Manifest, state: string, githubUrl = GITH
 }
 
 async function convertManifest(code: string, apiUrl: string): Promise<Conversion> {
-  let response: Response;
-  try {
-    response = await fetch(`${apiUrl}/app-manifests/${encodeURIComponent(code)}/conversions`, {
-      method: "POST",
-      headers: { Accept: "application/vnd.github+json", "User-Agent": "aos", "X-GitHub-Api-Version": "2022-11-28" },
-    });
-  } catch (error) {
-    throw new AosError(`Could not reach the GitHub API: ${(error as Error).message}`);
-  }
+  const response = await githubFetch(`${apiUrl}/app-manifests/${encodeURIComponent(code)}/conversions`, { method: "POST" });
   if (!response.ok) {
     throw new AosError(`GitHub did not accept the app manifest code (status ${response.status}). Run "aos github setup" again.`);
   }
@@ -165,11 +166,11 @@ function waitForCallback(
 }
 
 async function waitForInstallation(
-  config: { appId: string; keyFile: string },
+  config: GithubAppConfig,
   apiUrl: string,
   intervalMs: number,
   timeoutMs: number,
-): Promise<{ account: string; repositorySelection: string } | undefined> {
+): Promise<AppInstallation | undefined> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
@@ -179,7 +180,7 @@ async function waitForInstallation(
       // GitHub may take a moment to accept the new App's credentials.
     }
     if (Date.now() >= deadline) return undefined;
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    await sleep(intervalMs);
   }
 }
 
@@ -191,7 +192,8 @@ async function waitForInstallation(
 export async function setupGithubApp(options: GithubAppSetupOptions): Promise<number> {
   const out = options.out ?? ((line: string) => console.log(line));
   const githubUrl = options.githubUrl ?? GITHUB_URL;
-  const apiUrl = options.apiUrl ?? API_URL;
+  const apiUrl = options.apiUrl ?? GITHUB_API_URL;
+  const openUrl = options.openUrl ?? defaultOpenUrl;
   const { paths } = options;
   const keyFile = join(paths.secrets, KEY_FILE_NAME);
 
@@ -206,7 +208,7 @@ export async function setupGithubApp(options: GithubAppSetupOptions): Promise<nu
   }
 
   const login = (options.lookupLogin ?? (() => ghLogin(options.hostEnv)))() ?? (await (options.askLogin ?? askLogin)());
-  if (!/^[A-Za-z0-9-]+$/.test(login)) throw new AosError(`"${login}" is not a GitHub username.`);
+  if (!LOGIN.test(login)) throw new AosError(`"${login}" is not a GitHub username.`);
   const name = `aos-${login.slice(0, 20)}-${randomBytes(2).toString("hex")}`;
   const state = randomBytes(16).toString("hex");
 
@@ -226,7 +228,7 @@ export async function setupGithubApp(options: GithubAppSetupOptions): Promise<nu
     out(`Creating the GitHub App "${name}" for ${login} (contents and pull requests write, no webhook).`);
     out(`Opening ${startUrl} in your browser. If it does not open, open that URL yourself.`);
     out("On GitHub, confirm the app name and click Create GitHub App.");
-    (options.openUrl ?? defaultOpenUrl)(startUrl);
+    openUrl(startUrl);
 
     const created = await convertManifest(await callback.code, apiUrl);
 
@@ -239,7 +241,7 @@ export async function setupGithubApp(options: GithubAppSetupOptions): Promise<nu
     const installUrl = `${githubUrl}/apps/${created.slug}/installations/new`;
     out(`Now install it: ${installUrl}`);
     out('Pick "All repositories" so new repositories are covered, then click Install.');
-    (options.openUrl ?? defaultOpenUrl)(installUrl);
+    openUrl(installUrl);
 
     const setup = githubSetup(readSecretsEnv(paths.secretsEnv));
     if (setup.state !== "ready") throw new AosError(setup.state === "invalid" ? setup.problem : "The new GitHub App settings could not be read back.");

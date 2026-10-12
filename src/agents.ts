@@ -1,13 +1,12 @@
 import { join } from "node:path";
 import { claudeCode, codex, opencode, pi, type AgentProvider } from "@ai-hero/sandcastle";
 import type { DefaultsFile } from "./defaults.ts";
+import { SANDBOX_HOME } from "./docker.ts";
 import { AosError } from "./errors.ts";
 import { trustCodexProject } from "./trust.ts";
 
 export const AGENT_NAMES = ["claude", "codex", "opencode", "pi"] as const;
 export type AgentName = (typeof AGENT_NAMES)[number];
-
-const SANDBOX_HOME = "/home/agent";
 
 /** A directory under secrets/<agent>/ mounted into the container at `sandboxPath`. */
 export interface StateMount {
@@ -154,6 +153,8 @@ export const AGENTS: Readonly<Record<AgentName, AgentSpec>> = {
     loginHint: "Pi logs in from its own interface: type /login, pick the provider, and follow its prompts. Quit with Ctrl+C twice.",
   },
 };
+
+export const AGENT_SPECS: readonly AgentSpec[] = AGENT_NAMES.map((name) => AGENTS[name]);
 
 export function isAgentName(value: string): value is AgentName {
   return (AGENT_NAMES as readonly string[]).includes(value);

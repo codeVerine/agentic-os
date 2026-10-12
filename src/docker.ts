@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 import { AosError } from "./errors.ts";
 
 export const IMAGE = "aos-dev:local";
-export const DOCKER_CONTEXT_DIR = fileURLToPath(new URL("../docker", import.meta.url));
+/** Home directory of the image's agent user, where agent state and project mounts are placed. */
+export const SANDBOX_HOME = "/home/agent";
+const DOCKER_CONTEXT_DIR = fileURLToPath(new URL("../docker", import.meta.url));
 
 export interface HostIds {
   readonly uid: number;

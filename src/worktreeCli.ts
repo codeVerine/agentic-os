@@ -1,24 +1,10 @@
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { AosError } from "./errors.ts";
-import { locateProject } from "./paths.ts";
-import type { AosPaths } from "./paths.ts";
-import {
-  deleteBranch,
-  detachWorktree,
-  isMergedInto,
-  isWorktreeClean,
-  liveHolderPid,
-  mainCheckout,
-  mergeLocally,
-  projectKey,
-  readRegistry,
-  returnWorktree,
-  treehouseStatus,
-  withRegistryLock,
-  type TreehouseStatusEntry,
-  type WorktreeRecord,
-} from "./worktree.ts";
+import { deleteBranch, isMergedInto, isWorktreeClean, mainCheckout, mergeLocally } from "./git.ts";
+import { type AosPaths, locateProject } from "./paths.ts";
+import { projectKey, readRegistry, withRegistryLock, type WorktreeRecord } from "./registry.ts";
+import { leaseEnded, liveHolderPid, returnWorktree, treehouseStatus, type TreehouseStatusEntry } from "./treehouse.ts";
 
 const USAGE = `Usage: aos worktree <list|merge|rm|prune> [args]
 
@@ -72,10 +58,12 @@ function listWorktrees(cwd: string, paths: AosPaths): number {
   const live = treehouseStatus(mainRoot);
   for (const record of records) {
     const gone = !existsSync(record.worktreePath);
-    const leaseState = gone ? "gone" : (live?.find((e) => e.path === record.worktreePath)?.status ?? "unknown");
-    const clean = !gone && isWorktreeClean(record.worktreePath);
+    const ended = !gone && leaseEnded(record, live);
+    const leaseState = gone ? "gone" : ended ? "ended" : (live?.find((e) => e.path === record.worktreePath)?.status ?? "unknown");
     const merged = !gone && isMergedInto(mainRoot, record.branch);
-    const flags = gone ? "" : ` (${clean ? "clean" : "dirty"}, ${merged ? "merged" : "unmerged"})`;
+    const mergeFlag = merged ? "merged" : "unmerged";
+    // An ended lease's folder may belong to another session now, so its state says nothing about this record.
+    const flags = gone ? "" : ended ? ` (${mergeFlag})` : ` (${isWorktreeClean(record.worktreePath) ? "clean" : "dirty"}, ${mergeFlag})`;
     console.log(`${record.id}  ${record.agent.padEnd(8)} ${leaseState.padEnd(9)} ${record.branch}${flags}`);
     console.log(`    ${record.worktreePath}`);
   }
@@ -111,7 +99,8 @@ async function pruneWorktrees(cwd: string, paths: AosPaths): Promise<number> {
       removedIds.push(record.id);
       continue;
     }
-    if (!isWorktreeClean(record.worktreePath) || !isMergedInto(mainRoot, record.branch)) continue;
+    const ended = leaseEnded(record, status);
+    if ((!ended && !isWorktreeClean(record.worktreePath)) || !isMergedInto(mainRoot, record.branch)) continue;
     const pid = liveHolderPid(record, status);
     if (pid !== undefined) {
       console.log(`aos: ${record.id} (${record.branch}) is still in use by running aos process ${pid}; skipping it.`);
@@ -138,6 +127,8 @@ async function dropRecords(paths: AosPaths, key: string, ids: readonly string[])
 
 /**
  * Refuses on a still-running agent, uncommitted or unmerged work unless `force`; returns the lease and drops the branch.
+ * A lease that already ended outside aos is not returned and its folder is not touched, since treehouse
+ * may have handed that folder to another session; only the record's own branch is dropped.
  * Throws only while the lease is still held: once it is returned the caller must drop the record,
  * so a failed branch delete is reported rather than thrown.
  */
@@ -147,21 +138,23 @@ function removeOne(
   force: boolean,
   status: readonly TreehouseStatusEntry[] | undefined,
 ): void {
+  const ended = leaseEnded(record, status);
   if (!force) {
     const pid = liveHolderPid(record, status);
     if (pid !== undefined) {
       throw new AosError(`${record.id} is still in use by running aos process ${pid}. Exit that agent first, or run with --force.`);
     }
-    if (existsSync(record.worktreePath) && !isWorktreeClean(record.worktreePath)) {
+    if (!ended && existsSync(record.worktreePath) && !isWorktreeClean(record.worktreePath)) {
       throw new AosError(`${record.worktreePath} has uncommitted changes. Commit or discard them, or run with --force.`);
     }
     if (!isMergedInto(mainRoot, record.branch)) {
       throw new AosError(`${record.branch} is not merged into the branch checked out in ${mainRoot}. Run "aos worktree merge ${record.id}" first, or use --force.`);
     }
   }
-  if (existsSync(record.worktreePath)) {
-    detachWorktree(record.worktreePath);
-    returnWorktree(record.worktreePath);
+  if (ended) {
+    console.error(`aos: the treehouse lease of ${record.id} ended outside aos; leaving ${record.worktreePath} alone.`);
+  } else if (existsSync(record.worktreePath)) {
+    returnWorktree(record.worktreePath, record.leaseId);
   }
   try {
     deleteBranch(mainRoot, record.branch, force);

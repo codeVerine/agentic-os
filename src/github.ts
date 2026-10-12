@@ -1,4 +1,4 @@
-import { createPrivateKey, createSign, randomBytes, type KeyObject } from "node:crypto";
+import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
 import {
   closeSync,
   constants as fsConstants,
@@ -10,22 +10,21 @@ import {
   readSync,
   renameSync,
   rmSync,
-  statSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { AosError } from "./errors.ts";
+import { assertPrivate, ensurePrivateDir, withFileLock, writePrivateFileAtomic } from "./fsutil.ts";
 import { spawnGit } from "./git.ts";
-import { assertPrivate, ensurePrivateDir, GITHUB_APP_ID_KEY, GITHUB_APP_KEY_FILE_KEY, type SecretsEnv } from "./secrets.ts";
+import { GITHUB_APP_ID_KEY, GITHUB_APP_KEY_FILE_KEY, type SecretsEnv } from "./secrets.ts";
 
-const API_URL = "https://api.github.com";
+export const GITHUB_API_URL = "https://api.github.com";
 const API_VERSION = "2022-11-28";
+/** Short enough that a stalled GitHub fails the one request instead of the whole 90 seconds the container waits. */
+const API_TIMEOUT_MS = 20_000;
 /** One token per repository is shared by every session; it is replaced when less than this remains. */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
-const LOCK_STALE_MS = 30_000;
-const LOCK_TIMEOUT_MS = 60_000;
 const POLL_MS = 100;
 const REQUEST_ID = /^[0-9a-f]{32}$/;
 const MAX_REQUEST_BYTES = 4096;
@@ -60,7 +59,7 @@ export interface GithubApiOptions {
   readonly now?: () => number;
 }
 
-export function repoSlug(repo: RepoRef): string {
+function repoSlug(repo: RepoRef): string {
   return `${repo.owner}/${repo.name}`;
 }
 
@@ -99,7 +98,7 @@ function readPrivateKey(keyFile: string): KeyObject {
 export function classifyRemote(url: string): RemoteKind {
   const trimmed = url.trim();
   const scp = /^(?:[^@/\s]+@)?github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(trimmed);
-  if (scp && !trimmed.includes("://")) return repoKind("ssh", scp[1], scp[2]);
+  if (scp && !trimmed.includes("://")) return toRemote("ssh", scp[1], scp[2]);
   let parsed: URL;
   try {
     parsed = new URL(trimmed);
@@ -110,12 +109,12 @@ export function classifyRemote(url: string): RemoteKind {
   const parts = parsed.pathname.split("/").filter(Boolean);
   if (parts.length !== 2) return { kind: "other" };
   const name = (parts[1] ?? "").replace(/\.git$/i, "");
-  if (parsed.protocol === "https:") return repoKind("https", parts[0], name);
-  if (parsed.protocol === "ssh:" || parsed.protocol === "git+ssh:") return repoKind("ssh", parts[0], name);
+  if (parsed.protocol === "https:") return toRemote("https", parts[0], name);
+  if (parsed.protocol === "ssh:" || parsed.protocol === "git+ssh:") return toRemote("ssh", parts[0], name);
   return { kind: "other" };
 }
 
-function repoKind(kind: "https" | "ssh", owner: string | undefined, name: string | undefined): RemoteKind {
+function toRemote(kind: "https" | "ssh", owner: string | undefined, name: string | undefined): RemoteKind {
   const repo = owner !== undefined && name !== undefined ? repoRef(owner, name) : undefined;
   return repo ? { kind, repo } : { kind: "other" };
 }
@@ -148,23 +147,30 @@ function appJwt(config: GithubAppConfig, nowMs: number): string {
   return `${input}.${base64url(signature)}`;
 }
 
-async function api(baseUrl: string, method: "GET" | "POST", path: string, jwt: string, body?: unknown): Promise<unknown> {
-  let response: Response;
+/** `fetch` for the GitHub API, with the headers every aos request carries and one error for an unreachable API. */
+export async function githubFetch(url: string, init: { method: string; headers?: Record<string, string>; body?: string }): Promise<Response> {
   try {
-    response = await fetch(`${baseUrl}${path}`, {
-      method,
+    return await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
       headers: {
         Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${jwt}`,
-        "Content-Type": "application/json",
         "User-Agent": "aos",
         "X-GitHub-Api-Version": API_VERSION,
+        ...init.headers,
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (error) {
     throw new AosError(`Could not reach the GitHub API: ${(error as Error).message}`);
   }
+}
+
+async function api(baseUrl: string, method: "GET" | "POST", path: string, jwt: string, body?: unknown): Promise<unknown> {
+  const response = await githubFetch(`${baseUrl}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
   const text = await response.text();
   if (!response.ok) {
     throw new AosError(`GitHub API ${method} ${path} failed with ${response.status}: ${text.slice(0, 300)}`);
@@ -187,7 +193,7 @@ export async function mintInstallationToken(
   repo: RepoRef,
   options: GithubApiOptions = {},
 ): Promise<MintedToken> {
-  const baseUrl = options.baseUrl ?? API_URL;
+  const baseUrl = options.baseUrl ?? GITHUB_API_URL;
   const jwt = appJwt(config, (options.now ?? Date.now)());
   const slug = repoSlug(repo);
   let installation: unknown;
@@ -221,7 +227,7 @@ export interface AppInstallation {
 /** The installations of the App itself, authenticated with its JWT. */
 export async function listAppInstallations(config: GithubAppConfig, options: GithubApiOptions = {}): Promise<AppInstallation[]> {
   const jwt = appJwt(config, (options.now ?? Date.now)());
-  const installations = (await api(options.baseUrl ?? API_URL, "GET", "/app/installations?per_page=100", jwt)) as unknown;
+  const installations = (await api(options.baseUrl ?? GITHUB_API_URL, "GET", "/app/installations?per_page=100", jwt)) as unknown;
   if (!Array.isArray(installations)) throw new AosError("GitHub returned an unexpected installations response.");
   return installations.map((entry: { account?: { login?: unknown }; repository_selection?: unknown }) => ({
     account: typeof entry.account?.login === "string" ? entry.account.login : "unknown",
@@ -245,41 +251,6 @@ function readCache(file: string, appId: string, nowMs: number): string | undefin
   }
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
-
-function lockOwner(lockPath: string): string | undefined {
-  try {
-    return readFileSync(lockPath, "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-async function withLock<T>(lockPath: string, run: () => Promise<T>): Promise<T> {
-  const owner = randomBytes(16).toString("hex");
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  for (;;) {
-    try {
-      writeFileSync(lockPath, owner, { flag: "wx", mode: 0o600 });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      try {
-        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) unlinkSync(lockPath);
-      } catch {
-        // The holder released it between the checks; try to take it again.
-      }
-      if (Date.now() > deadline) throw new AosError(`Timed out waiting for another aos session to mint a token (${lockPath}).`);
-      await sleep(50);
-    }
-  }
-  try {
-    return await run();
-  } finally {
-    if (lockOwner(lockPath) === owner) rmSync(lockPath, { force: true });
-  }
-}
-
 /**
  * The token for `repo`, shared through `tokensDir` by every aos process on this Mac. It is minted
  * under a file lock so parallel sessions of one repository mint once, and again only when less
@@ -296,13 +267,11 @@ export async function tokenForRepo(
   const cached = readCache(file, config.appId, now());
   if (cached !== undefined) return cached;
   ensurePrivateDir(tokensDir);
-  return withLock(`${file}.lock`, async () => {
+  return withFileLock(`${file}.lock`, async () => {
     const raced = readCache(file, config.appId, now());
     if (raced !== undefined) return raced;
     const minted = await mintInstallationToken(config, repo, options);
-    const staging = `${file}.${process.pid}.tmp`;
-    writeFileSync(staging, JSON.stringify({ appId: config.appId, ...minted }), { mode: 0o600 });
-    renameSync(staging, file);
+    writePrivateFileAtomic(file, JSON.stringify({ appId: config.appId, ...minted }));
     return minted.token;
   });
 }

@@ -6,6 +6,7 @@ import { after, describe, test } from "node:test";
 import { AGENT_NAMES, AGENTS } from "../src/agents.ts";
 import { applyDefaults, fillMissing } from "../src/defaults.ts";
 import { trustCodexProject } from "../src/trust.ts";
+import { fileMode } from "./helpers.ts";
 
 describe("fillMissing", () => {
   test("adds absent keys and leaves the rest alone", () => {
@@ -41,14 +42,13 @@ describe("applyDefaults", () => {
   const dir = mkdtempSync(join(tmpdir(), "aos-defaults-"));
   after(() => rmSync(dir, { recursive: true, force: true }));
   const defaults = { file: "settings.json", values: { defaultProjectTrust: "always" } };
-  const mode = (path: string): number => statSync(path).mode & 0o777;
 
   test("creates a missing file with mode 0600", () => {
     const agentDir = join(dir, "create");
     mkdirSync(agentDir);
     applyDefaults(agentDir, defaults);
     assert.deepEqual(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")), { defaultProjectTrust: "always" });
-    assert.equal(mode(join(agentDir, "settings.json")), 0o600);
+    assert.equal(fileMode(join(agentDir, "settings.json")), 0o600);
   });
 
   test("keeps the user's settings and their choices, and stays stable across launches", () => {

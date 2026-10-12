@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createVerify, generateKeyPairSync } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,9 @@ import { after, describe, test } from "node:test";
 import { AosError } from "../src/errors.ts";
 import { appManifest, setupGithubApp } from "../src/githubSetup.ts";
 import { aosPaths } from "../src/paths.ts";
-import { ensurePrivateDir, setTopLevelKeys } from "../src/secrets.ts";
+import { ensurePrivateDir } from "../src/fsutil.ts";
+import { setTopLevelKeys } from "../src/secrets.ts";
+import { fileMode } from "./helpers.ts";
 
 const base = mkdtempSync(join(tmpdir(), "aos-github-setup-"));
 after(() => rmSync(base, { recursive: true, force: true }));
@@ -18,7 +20,6 @@ const PEM = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 const CLIENT_SECRET = "client-secret-must-not-be-printed";
 const WEBHOOK_SECRET = "webhook-secret-must-not-be-stored";
 const APP_ID = 987654;
-const mode = (path: string): number => statSync(path).mode & 0o777;
 
 interface FakeGithub {
   readonly url: string;
@@ -143,8 +144,8 @@ describe("aos github setup", () => {
       assert.deepEqual(fake.conversions, ["the-manifest-code"], "only the callback with the right state is converted");
 
       assert.equal(readFileSync(keyFile, "utf8"), PEM);
-      assert.equal(mode(keyFile), 0o600);
-      assert.equal(mode(paths.secretsEnv), 0o600);
+      assert.equal(fileMode(keyFile), 0o600);
+      assert.equal(fileMode(paths.secretsEnv), 0o600);
       assert.equal(
         readFileSync(paths.secretsEnv, "utf8"),
         `OPENAI_API_KEY=sk-existing\nAOS_GITHUB_APP_ID=${APP_ID}\nAOS_GITHUB_APP_KEY_FILE=${keyFile}\n\n[pi]\nMY_KEY=pi-only\n`,
@@ -261,7 +262,7 @@ describe("aos github setup", () => {
       await browser;
       assert.equal(code, 0);
       assert.equal(readFileSync(keyFile, "utf8"), PEM);
-      assert.equal(mode(keyFile), 0o600);
+      assert.equal(fileMode(keyFile), 0o600);
       assert.equal(
         readFileSync(paths.secretsEnv, "utf8"),
         `AOS_GITHUB_APP_ID=${APP_ID}\nAOS_GITHUB_APP_KEY_FILE=${keyFile}\nOPENAI_API_KEY=sk\n`,

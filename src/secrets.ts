@@ -1,7 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_NAMES, type AgentName, type AgentSpec, isAgentName } from "./agents.ts";
 import { AosError } from "./errors.ts";
+import { assertPrivate, ensurePrivateDir, writePrivateFileAtomic } from "./fsutil.ts";
 
 /**
  * Parsed secrets env file. Top-level keys reach every agent that lists the key
@@ -109,20 +110,6 @@ export function unroutedKeys(secrets: SecretsEnv, specs: readonly AgentSpec[]): 
   );
 }
 
-export function assertPrivate(path: string, mode: number): void {
-  const actual = statSync(path).mode & 0o777;
-  if ((actual & 0o077) !== 0) {
-    throw new AosError(
-      `${path} is readable by other users (mode ${actual.toString(8)}). Run: chmod ${mode.toString(8)} ${path}`,
-    );
-  }
-}
-
-export function ensurePrivateDir(path: string): void {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
-  chmodSync(path, 0o700);
-}
-
 /** Creates secrets/<agent>/ and its state subdirectories, all mode 0700. */
 export function ensureAgentStateDirs(secretsDir: string, spec: AgentSpec): string {
   const agentDir = join(secretsDir, spec.name);
@@ -160,9 +147,7 @@ export function setTopLevelKeys(content: string, entries: Readonly<Record<string
 /** Applies `setTopLevelKeys` to the secrets env file, keeping it mode 0600; creates it when absent. */
 export function writeSecretsEnvKeys(path: string, entries: Readonly<Record<string, string>>): void {
   const current = existsSync(path) ? readFileSync(path, "utf8") : ENV_TEMPLATE;
-  const staging = `${path}.aos-${process.pid}.tmp`;
-  writeFileSync(staging, setTopLevelKeys(current, entries), { mode: 0o600 });
-  renameSync(staging, path);
+  writePrivateFileAtomic(path, setTopLevelKeys(current, entries));
 }
 
 /** Writes the env template when absent; returns true when it created the file. */

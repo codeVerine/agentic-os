@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -12,8 +12,7 @@ import {
   parseSecretsEnv,
   readSecretsEnv,
 } from "../src/secrets.ts";
-
-const mode = (path: string): number => statSync(path).mode & 0o777;
+import { fileMode } from "./helpers.ts";
 
 describe("parseSecretsEnv", () => {
   test("reads shared keys, comments, export prefixes and quotes", () => {
@@ -99,18 +98,18 @@ describe("secrets files", () => {
   test("init creates the env template with mode 0600 and never overwrites it", () => {
     const path = join(dir, "env");
     assert.equal(ensureSecretsEnvFile(path), true);
-    assert.equal(mode(path), 0o600);
+    assert.equal(fileMode(path), 0o600);
     writeFileSync(path, "KEPT=1\n");
     chmodSync(path, 0o640);
     assert.equal(ensureSecretsEnvFile(path), false);
     assert.equal(readFileSync(path, "utf8"), "KEPT=1\n");
-    assert.equal(mode(path), 0o600);
+    assert.equal(fileMode(path), 0o600);
   });
 
   test("agent state directories are created private, including subdirectories", () => {
     const agentDir = ensureAgentStateDirs(dir, AGENTS.opencode);
-    assert.equal(mode(agentDir), 0o700);
-    for (const sub of ["data", "config", "state"]) assert.equal(mode(join(agentDir, sub)), 0o700);
+    assert.equal(fileMode(agentDir), 0o700);
+    for (const sub of ["data", "config", "state"]) assert.equal(fileMode(join(agentDir, sub)), 0o700);
   });
 
   test("a login file only counts once it holds credentials", () => {

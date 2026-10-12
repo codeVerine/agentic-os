@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AosError } from "./errors.ts";
-import { spawnGit } from "./git.ts";
+import { gitOrEmpty } from "./git.ts";
 
 export interface AosPaths {
   readonly root: string;
@@ -52,6 +52,11 @@ export function aosPaths(root: string): AosPaths {
   };
 }
 
+/** Refuses to run before `aos init` has created the secrets directory. */
+export function assertInitialised(paths: AosPaths): void {
+  if (!existsSync(paths.secrets)) throw new AosError(`${paths.secrets} does not exist. Run "aos init" first.`);
+}
+
 export function locateProject(cwd: string): ProjectLocation {
   const here = realpathOrThrow(cwd, `Current directory ${cwd} does not exist.`);
   const root = gitRoot(here);
@@ -79,7 +84,7 @@ export function locateProject(cwd: string): ProjectLocation {
 export function assertGitMetadataMountable(root: string): void {
   const dotGit = join(root, ".git");
   if (lstatSync(dotGit, { throwIfNoEntry: false })?.isFile() !== true) return;
-  const superproject = git(root, "rev-parse", "--show-superproject-working-tree");
+  const superproject = gitOrEmpty(root, "rev-parse", "--show-superproject-working-tree");
   if (superproject !== "") {
     throw new AosError(
       `${root} is a git submodule, and git cannot reach its repository from inside the container. Run aos from the superproject ${superproject} instead.`,
@@ -95,7 +100,7 @@ export function assertGitMetadataMountable(root: string): void {
     throw new AosError(`Git directory ${gitdir} contains ":" or ",", which Docker bind mounts cannot express.`);
   }
   const mounted = resolve(gitdir, "..", "..");
-  const commonDir = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const commonDir = gitOrEmpty(root, "rev-parse", "--path-format=absolute", "--git-common-dir");
   if (basename(dirname(gitdir)) !== "worktrees" || commonDir === "" || realpathSync(mounted) !== realpathSync(commonDir)) {
     throw new AosError(
       `${root} keeps its git directory at ${gitdir}, outside the project, and is not a linked worktree, so the sandbox would have to mount ${mounted}. Run aos from a checkout whose .git is a directory, or from a linked worktree.`,
@@ -119,24 +124,19 @@ export function sandboxName(name: string, root: string): string {
  * from, used to key the aos worktree registry and the container path of a leased worktree.
  */
 export function gitCommonDir(root: string): string {
-  const common = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const common = gitOrEmpty(root, "rev-parse", "--path-format=absolute", "--git-common-dir");
   if (common === "") throw new AosError(`Could not resolve the git directory for ${root}.`);
   return realpathOrThrow(common, `Git directory ${common} does not exist.`);
 }
 
 function gitRoot(dir: string): string {
-  const top = git(dir, "rev-parse", "--show-toplevel");
+  const top = gitOrEmpty(dir, "rev-parse", "--show-toplevel");
   if (top === "") {
     throw new AosError(
       `${dir} is not inside a git repository. aos needs a git repository with at least one commit: run "git init" and make a first commit in your project, then run the command again.`,
     );
   }
   return realpathOrThrow(top, `Git repository root ${top} does not exist.`);
-}
-
-function git(dir: string, ...args: string[]): string {
-  const result = spawnGit(["-C", dir, ...args]);
-  return result.status === 0 ? result.stdout.trim() : "";
 }
 
 function realpathOrThrow(path: string, message: string): string {
