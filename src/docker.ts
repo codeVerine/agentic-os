@@ -139,15 +139,14 @@ export function leftoverContainers(image = IMAGE): string[] {
     "status=exited",
     "--filter",
     "status=dead",
-    "--filter",
-    "status=created",
   ]);
   return result.ok ? result.stdout.split("\n").filter(Boolean) : [];
 }
 
-/** Removes the given containers; returns how many docker confirmed removing. */
-export function removeContainers(ids: readonly string[]): number {
-  if (ids.length === 0) return 0;
+/** Removes the given containers; `removed` counts those docker confirmed, `error` is docker's stderr when any failed. */
+export function removeContainers(ids: readonly string[]): { removed: number; error?: string } {
+  if (ids.length === 0) return { removed: 0 };
   const result = docker(["rm", ...ids]);
-  return result.stdout.split("\n").filter(Boolean).length;
+  const removed = result.stdout.split("\n").filter(Boolean).length;
+  return result.ok ? { removed } : { removed, error: result.stderr };
 }

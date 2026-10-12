@@ -70,7 +70,9 @@ export function runDoctor(paths: AosPaths, options: { readonly clean?: boolean }
     if (leftovers.length === 0) {
       report("ok", "containers", "no stopped aos containers");
     } else if (options.clean) {
-      report("ok", "containers", `removed ${removeContainers(leftovers)} of ${leftovers.length} stopped aos containers`);
+      const removal = removeContainers(leftovers);
+      const summary = `removed ${removal.removed} of ${leftovers.length} stopped aos containers`;
+      report(removal.error ? "warn" : "ok", "containers", removal.error ? `${summary}: ${removal.error}` : summary);
     } else {
       report("warn", "containers", `${leftovers.length} stopped aos container${leftovers.length === 1 ? "" : "s"} left over: run "aos doctor --clean" to remove`);
     }

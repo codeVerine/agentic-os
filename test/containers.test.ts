@@ -20,7 +20,8 @@ writeFileSync(
 echo "$@" >> "${callLog}"
 case "$1" in
   ps) printf '%s' "$FAKE_DOCKER_PS" ;;
-  rm) shift; for arg in "$@"; do case "$arg" in -*) ;; *) echo "$arg" ;; esac; done ;;
+  rm) shift; for arg in "$@"; do case "$arg" in -*) ;; *) echo "$arg" ;; esac; done
+    if [ -n "$FAKE_DOCKER_RM_ERROR" ]; then echo "$FAKE_DOCKER_RM_ERROR" >&2; exit 1; fi ;;
 esac
 `,
 );
@@ -34,6 +35,7 @@ function calls(): string[] {
 beforeEach(() => {
   rmSync(callLog, { force: true });
   delete process.env.FAKE_DOCKER_PS;
+  delete process.env.FAKE_DOCKER_RM_ERROR;
 });
 
 describe("launchMarkerPath", () => {
@@ -62,14 +64,19 @@ describe("leftoverContainers", () => {
     process.env.FAKE_DOCKER_PS = "dead01\nexit02\n";
     assert.deepEqual(leftoverContainers("aos-dev:local"), ["dead01", "exit02"]);
     assert.deepEqual(calls(), [
-      "ps -aq --no-trunc --filter ancestor=aos-dev:local --filter name=^sandcastle- --filter status=exited --filter status=dead --filter status=created",
+      "ps -aq --no-trunc --filter ancestor=aos-dev:local --filter name=^sandcastle- --filter status=exited --filter status=dead",
     ]);
   });
 
   test("removeContainers removes the listed ids without force and reports how many went", () => {
-    assert.equal(removeContainers(["dead01", "exit02"]), 2);
+    assert.deepEqual(removeContainers(["dead01", "exit02"]), { removed: 2 });
     assert.deepEqual(calls(), ["rm dead01 exit02"]);
-    assert.equal(removeContainers([]), 0);
+    assert.deepEqual(removeContainers([]), { removed: 0 });
+  });
+
+  test("removeContainers surfaces docker's error when a removal fails", () => {
+    process.env.FAKE_DOCKER_RM_ERROR = "Error: No such container: exit02";
+    assert.deepEqual(removeContainers(["dead01", "exit02"]), { removed: 2, error: "Error: No such container: exit02" });
   });
 });
 
