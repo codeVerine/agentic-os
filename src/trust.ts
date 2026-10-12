@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writePrivateFileAtomic } from "./fsutil.ts";
 
 /**
  * Appends the entry Codex writes itself when its "Trust this folder?" prompt is
@@ -13,7 +14,5 @@ export function trustCodexProject(codexHome: string, sandboxProjectRoot: string)
   const key = JSON.stringify(sandboxProjectRoot);
   if (current.includes(key)) return;
   const separator = current === "" || current.endsWith("\n\n") ? "" : current.endsWith("\n") ? "\n" : "\n\n";
-  const staging = `${path}.aos-${process.pid}.tmp`;
-  writeFileSync(staging, `${current}${separator}[projects.${key}]\ntrust_level = "trusted"\n`, { mode: 0o600 });
-  renameSync(staging, path);
+  writePrivateFileAtomic(path, `${current}${separator}[projects.${key}]\ntrust_level = "trusted"\n`);
 }

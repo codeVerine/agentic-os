@@ -24,7 +24,7 @@ What an agent container can write today:
 
 What aos does about it:
 
-- Every host git call aos makes itself runs through `hookSafeGitEnv` (`src/hostenv.ts`), which sets
+- Every host git call aos makes itself runs through `hookSafeGitEnv` (`src/git.ts`), which sets
   `core.hooksPath=/dev/null` and `core.fsmonitor=false`. This stops hooks and fsmonitor from running.
 - Nothing else. No container mount is read-only, and aos does not compare the git directory against an
   approved state at any point.
@@ -59,9 +59,9 @@ created a marker file on the host. Then the real aos CLI ran on the host, from t
 No hook marker fired through aos, so `hookSafeGitEnv` does what it claims. It is just not a complete
 baseline:
 
-- `isWorktreeClean` runs `git status --porcelain` in every worktree (`src/worktree.ts`), which runs clean
+- `isWorktreeClean` runs `git status --porcelain` in every worktree (`src/git.ts`), which runs clean
   filters.
-- `mergeLocally` runs `git merge --no-edit` in the main checkout (`src/worktree.ts`), which runs merge
+- `mergeLocally` runs `git merge --no-edit` in the main checkout (`src/git.ts`), which runs merge
   drivers, filters and commit signing.
 - `checkoutNewBranch` and treehouse's own lease checkout write files, which runs smudge filters. Not
   lab-tested; same mechanism.

@@ -18,6 +18,7 @@ import {
   type GithubAppConfig,
 } from "../src/github.ts";
 import { parseSecretsEnv } from "../src/secrets.ts";
+import { initRepo } from "./helpers.ts";
 
 const HELPER = fileURLToPath(new URL("../docker/aos-github.mjs", import.meta.url));
 const APP_ID = "123456";
@@ -130,9 +131,7 @@ function runHelper(args: readonly string[], env: Record<string, string>, stdin =
 }
 
 function gitRepo(name: string, origin?: string): string {
-  const dir = join(base, name);
-  mkdirSync(dir, { recursive: true });
-  execFileSync("git", ["init", "-q", dir]);
+  const dir = initRepo(join(base, name));
   if (origin) execFileSync("git", ["-C", dir, "remote", "add", "origin", origin]);
   return dir;
 }

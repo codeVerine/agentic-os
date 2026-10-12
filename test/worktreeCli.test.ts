@@ -5,12 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { aosPaths, locateProject } from "../src/paths.ts";
-import type { WorktreeRecord } from "../src/worktree.ts";
+import type { WorktreeRecord } from "../src/registry.ts";
+import { initCommittedRepo } from "./helpers.ts";
 
 // A fake treehouse binary lets these tests exercise the lease and return paths without the real CLI
 // installed. It logs every call, leases whatever path AOS_FAKE_LEASE_PATH names, reports
-// AOS_FAKE_STATUS as its pool status, and fails `return` for any path containing "fail-return". The env var must be set before worktree.ts is first
-// evaluated, so it is imported dynamically below.
+// AOS_FAKE_STATUS as its pool status, and fails `return` for any path containing "fail-return". The env var must be set before treehouse.ts is first
+// evaluated, which worktree.ts does on import, so worktree.ts is imported dynamically below.
 const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-worktree-cli-")));
 after(() => rmSync(base, { recursive: true, force: true }));
 
@@ -39,7 +40,8 @@ function treehouseCalls(): string[] {
   return existsSync(treehouseLog) ? readFileSync(treehouseLog, "utf8").trim().split("\n") : [];
 }
 
-const { projectKey, resolveWorktreeTarget, withRegistryLock, readRegistry } = await import("../src/worktree.ts");
+const { resolveWorktreeTarget } = await import("../src/worktree.ts");
+const { projectKey, withRegistryLock, readRegistry } = await import("../src/registry.ts");
 const { worktreeCommand } = await import("../src/worktreeCli.ts");
 // cli.ts strips process.env before any treehouse call; treehouse must still see the host's pool root.
 delete process.env.TREEHOUSE_ROOT;
@@ -51,12 +53,7 @@ interface Repo {
 }
 
 function repo(name: string): Repo {
-  const main = join(base, name);
-  mkdirSync(main);
-  execFileSync("git", ["init", "--quiet", main]);
-  execFileSync("git", ["-C", main, "config", "user.email", "aos@example.com"]);
-  execFileSync("git", ["-C", main, "config", "user.name", "aos"]);
-  execFileSync("git", ["-C", main, "commit", "--quiet", "--allow-empty", "-m", "init"]);
+  const main = initCommittedRepo(join(base, name));
   const paths = aosPaths(join(base, `${name}-root`));
   return { main, paths, key: projectKey(main) };
 }
@@ -333,7 +330,7 @@ describe("resolveWorktreeTarget", () => {
 
     const target = await resolveWorktreeTarget("claude", ["--resume", "session-main"], project, r.paths, agentDir);
 
-    assert.deepEqual(target, { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined, created: false });
+    assert.deepEqual(target, { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined });
     assert.equal(treehouseCalls().filter((call) => call.startsWith("get")).length, leasesBefore);
   });
 });

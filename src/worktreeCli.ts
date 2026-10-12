@@ -1,24 +1,10 @@
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { AosError } from "./errors.ts";
-import { locateProject } from "./paths.ts";
-import type { AosPaths } from "./paths.ts";
-import {
-  deleteBranch,
-  detachWorktree,
-  isMergedInto,
-  isWorktreeClean,
-  liveHolderPid,
-  mainCheckout,
-  mergeLocally,
-  projectKey,
-  readRegistry,
-  returnWorktree,
-  treehouseStatus,
-  withRegistryLock,
-  type TreehouseStatusEntry,
-  type WorktreeRecord,
-} from "./worktree.ts";
+import { deleteBranch, detachWorktree, isMergedInto, isWorktreeClean, mainCheckout, mergeLocally } from "./git.ts";
+import { type AosPaths, locateProject } from "./paths.ts";
+import { projectKey, readRegistry, withRegistryLock, type WorktreeRecord } from "./registry.ts";
+import { liveHolderPid, returnWorktree, treehouseStatus, type TreehouseStatusEntry } from "./treehouse.ts";
 
 const USAGE = `Usage: aos worktree <list|merge|rm|prune> [args]
 

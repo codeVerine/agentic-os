@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { AosError } from "../src/errors.ts";
 import { aosRoot, locateProject, sandboxName } from "../src/paths.ts";
+import { commitEmpty, initRepo } from "./helpers.ts";
 
 describe("aosRoot", () => {
   test("defaults to ~/AgenticOS", () => {
@@ -31,8 +32,7 @@ describe("locateProject", () => {
   function repo(...parts: string[]): string {
     const dir = join(home, ...parts);
     mkdirSync(join(dir, "src", "lib"), { recursive: true });
-    execFileSync("git", ["init", "--quiet", dir]);
-    return dir;
+    return initRepo(dir);
   }
 
   test("launches from an arbitrary git directory outside AOS_ROOT", () => {
@@ -79,7 +79,7 @@ describe("locateProject", () => {
 
   function committedRepo(...parts: string[]): string {
     const dir = repo(...parts);
-    execFileSync("git", ["-C", dir, "commit", "--allow-empty", "--quiet", "-m", "init"]);
+    commitEmpty(dir);
     return dir;
   }
 

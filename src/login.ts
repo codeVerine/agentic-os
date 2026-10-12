@@ -1,12 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSpec } from "./agents.ts";
-import { assertImageMatchesHost, hostIds, IMAGE } from "./docker.ts";
+import { assertImageMatchesHost, hostIds, IMAGE, SANDBOX_HOME } from "./docker.ts";
 import { AosError } from "./errors.ts";
 import { terminalEnv } from "./hostenv.ts";
-import type { AosPaths } from "./paths.ts";
+import { type AosPaths, assertInitialised } from "./paths.ts";
 import { ensureAgentStateDirs, missingLoginFiles } from "./secrets.ts";
 
 /**
@@ -15,7 +14,7 @@ import { ensureAgentStateDirs, missingLoginFiles } from "./secrets.ts";
  * in secrets/<agent>/ and shared by every project.
  */
 export function loginAgent(spec: AgentSpec, loginArgs: readonly string[], paths: AosPaths, hostEnv: NodeJS.ProcessEnv): number {
-  if (!existsSync(paths.secrets)) throw new AosError(`${paths.secrets} does not exist. Run "aos init" first.`);
+  assertInitialised(paths);
   const ids = hostIds();
   assertImageMatchesHost(ids);
   const agentDir = ensureAgentStateDirs(paths.secrets, spec);
@@ -30,7 +29,7 @@ export function loginAgent(spec: AgentSpec, loginArgs: readonly string[], paths:
     "--user",
     `${ids.uid}:${ids.gid}`,
     "--workdir",
-    "/home/agent",
+    SANDBOX_HOME,
     ...Object.keys(containerEnv).flatMap((key) => ["--env", key]),
     ...spec.stateMounts.flatMap((mount) => [
       "--mount",

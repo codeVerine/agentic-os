@@ -3,8 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
-import { spawnGit } from "../src/git.ts";
-import { hookSafeGitEnv } from "../src/hostenv.ts";
+import { hookSafeGitEnv, spawnGit } from "../src/git.ts";
 
 describe("hookSafeGitEnv", () => {
   test("disables hooks and fsmonitor via GIT_CONFIG_* env vars", () => {

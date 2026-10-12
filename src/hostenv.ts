@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { hookSafeGitEnv } from "./git.ts";
 
 const KEPT_HOST_VARS = new Set([
   "HOME",
@@ -19,22 +20,6 @@ const KEPT_HOST_VARS = new Set([
 
 /** Terminal hints forwarded into the container so the agent TUI renders like it does on the host. */
 const TERMINAL_VARS = ["COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
-
-/**
- * Env additions that stop a `git` process from running a repository's own hooks or spawning an
- * fsmonitor daemon, via the `GIT_CONFIG_*` env vars git reads as if they were `-c` overrides.
- * Shared by every host-side git call aos makes, directly or through Sandcastle, so a hook an agent
- * committed into a project (including one of its own worktrees) never runs on the Mac.
- */
-export function hookSafeGitEnv(): Record<string, string> {
-  return {
-    GIT_CONFIG_COUNT: "2",
-    GIT_CONFIG_KEY_0: "core.hooksPath",
-    GIT_CONFIG_VALUE_0: "/dev/null",
-    GIT_CONFIG_KEY_1: "core.fsmonitor",
-    GIT_CONFIG_VALUE_1: "false",
-  };
-}
 
 /**
  * Environment for the aos process while it drives Sandcastle and Docker.

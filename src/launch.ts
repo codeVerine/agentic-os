@@ -1,20 +1,20 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { interactive } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { type AgentSpec, interactiveProvider } from "./agents.ts";
 import { applyDefaults } from "./defaults.ts";
-import { assertImageMatchesHost, hostIds, IMAGE, launchMarkerPath, removeLaunchContainers } from "./docker.ts";
+import { assertImageMatchesHost, hostIds, IMAGE, launchMarkerPath, removeLaunchContainers, SANDBOX_HOME } from "./docker.ts";
 import { AosError } from "./errors.ts";
 import { cleanupOnExit } from "./exit.ts";
+import { gitOrEmpty } from "./git.ts";
 import { prepareGithubAccess } from "./github.ts";
 import { terminalEnv } from "./hostenv.ts";
-import { type AosPaths, locateProject, type ProjectLocation } from "./paths.ts";
+import { type AosPaths, assertInitialised, locateProject, type ProjectLocation } from "./paths.ts";
 import { ensureAgentStateDirs, readSecretsEnv, selectAgentEnv } from "./secrets.ts";
 import { containerWorkdir, resolveWorktreeTarget } from "./worktree.ts";
 
-const SANDBOX_PROJECTS_DIR = "/home/agent/projects";
+const SANDBOX_PROJECTS_DIR = `${SANDBOX_HOME}/projects`;
 
 export interface LaunchOptions {
   readonly paths: AosPaths;
@@ -29,7 +29,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   const agentArgs = rawArgs.filter((arg) => arg !== "--here");
   const project = locateProject(options.cwd);
   assertCommittedGitRepo(project);
-  if (!existsSync(paths.secrets)) throw new AosError(`${paths.secrets} does not exist. Run "aos init" first.`);
+  assertInitialised(paths);
   const ids = hostIds();
   assertImageMatchesHost(ids);
 
@@ -114,8 +114,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
 }
 
 function assertCommittedGitRepo(project: ProjectLocation): void {
-  const head = spawnSync("git", ["-C", project.root, "rev-parse", "--verify", "--quiet", "HEAD"], { encoding: "utf8" });
-  if (head.status !== 0) {
+  if (gitOrEmpty(project.root, "rev-parse", "--verify", "--quiet", "HEAD") === "") {
     throw new AosError(`Project ${project.name} has no commits yet. Sandcastle needs one: make a first commit in ${project.root}.`);
   }
 }
