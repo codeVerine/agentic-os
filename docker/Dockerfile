@@ -46,7 +46,13 @@ RUN npm install -g \
 RUN mkdir -p /etc/codex \
   && printf 'approval_policy = "never"\nsandbox_mode = "danger-full-access"\n' > /etc/codex/config.toml
 
-COPY codex-refresh.mjs /usr/local/lib/aos/codex-refresh.mjs
+COPY codex-refresh.mjs aos-github.mjs /usr/local/lib/aos/
+
+# GitHub access: git asks aos on the Mac for a one-repository token through this
+# credential helper, and the gh wrapper does the same before running the real gh.
+# Neither holds a credential; src/github.ts documents the channel.
+COPY --chmod=755 gh-wrapper.sh /usr/local/bin/gh
+RUN printf '[credential "https://github.com"]\n\thelper = !node /usr/local/lib/aos/aos-github.mjs credential\n\tuseHttpPath = true\n' > /etc/gitconfig
 
 # Sandcastle's docker provider runs the container as --user <host uid>:<host gid>
 # and refuses to start when the image user does not match, so the base image's

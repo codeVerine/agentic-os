@@ -8,6 +8,7 @@ import { applyDefaults } from "./defaults.ts";
 import { assertImageMatchesHost, hostIds, IMAGE, launchMarkerPath, removeLaunchContainers } from "./docker.ts";
 import { AosError } from "./errors.ts";
 import { cleanupOnExit } from "./exit.ts";
+import { prepareGithubAccess } from "./github.ts";
 import { terminalEnv } from "./hostenv.ts";
 import { type AosPaths, locateProject, type ProjectLocation } from "./paths.ts";
 import { ensureAgentStateDirs, readSecretsEnv, selectAgentEnv } from "./secrets.ts";
@@ -62,6 +63,15 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
     return { hostPath, sandboxPath };
   });
 
+  const github = prepareGithubAccess({
+    secrets,
+    repoRoot: target.hostRoot,
+    runDir,
+    containerRunDir: markerPath,
+    tokensDir: paths.githubTokens,
+    notify: (message) => console.error(`aos: ${message}`),
+  });
+
   const sandbox = docker({
     imageName: IMAGE,
     containerUid: ids.uid,
@@ -84,10 +94,17 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
       sandbox,
       cwd: target.hostRoot,
       branchStrategy: { type: "head" },
-      env: { ...terminalEnv(options.hostEnv), ...spec.configEnv, ...spec.launchEnv, ...selectAgentEnv(spec, secrets) },
+      env: {
+        ...terminalEnv(options.hostEnv),
+        ...spec.configEnv,
+        ...spec.launchEnv,
+        ...selectAgentEnv(spec, secrets),
+        ...github.env,
+      },
     });
     return result.exitCode;
   } finally {
+    github.stop();
     finish();
   }
 }

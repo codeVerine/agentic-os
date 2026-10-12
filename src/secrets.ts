@@ -16,6 +16,11 @@ const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SECTION = /^\[\s*([^\]]*?)\s*\]$/;
 const INLINE_COMMENT = /^(\s+#.*)?$/;
 
+/** Top-level keys aos reads itself to give containers GitHub access; they are never passed into a container. */
+export const GITHUB_APP_ID_KEY = "AOS_GITHUB_APP_ID";
+export const GITHUB_APP_KEY_FILE_KEY = "AOS_GITHUB_APP_KEY_FILE";
+const AOS_OWN_KEYS: readonly string[] = [GITHUB_APP_ID_KEY, GITHUB_APP_KEY_FILE_KEY];
+
 export const EMPTY_SECRETS: SecretsEnv = { shared: new Map(), perAgent: new Map() };
 
 export const ENV_TEMPLATE = `# aos secrets: KEY=VALUE lines, one per line. Keep this file mode 0600.
@@ -28,6 +33,12 @@ export const ENV_TEMPLATE = `# aos secrets: KEY=VALUE lines, one per line. Keep 
 #
 # [pi]
 # MY_ROUTER_API_KEY=
+#
+# GitHub access for agents (see README, "GitHub access"). Both are read by aos
+# on the Mac and never passed into a container. The key file must be mode 0600.
+#
+# AOS_GITHUB_APP_ID=
+# AOS_GITHUB_APP_KEY_FILE=~/AgenticOS/secrets/github-app.pem
 `;
 
 export function parseSecretsEnv(content: string, source = "secrets env"): SecretsEnv {
@@ -93,7 +104,9 @@ export function selectAgentEnv(spec: AgentSpec, secrets: SecretsEnv): Record<str
 
 /** Shared keys that no agent will receive, usually a typo or a key that belongs in a section. */
 export function unroutedKeys(secrets: SecretsEnv, specs: readonly AgentSpec[]): string[] {
-  return [...secrets.shared.keys()].filter((key) => !specs.some((spec) => spec.envKeys.includes(key)));
+  return [...secrets.shared.keys()].filter(
+    (key) => !AOS_OWN_KEYS.includes(key) && !specs.some((spec) => spec.envKeys.includes(key)),
+  );
 }
 
 export function assertPrivate(path: string, mode: number): void {

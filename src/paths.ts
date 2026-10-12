@@ -10,6 +10,8 @@ export interface AosPaths {
   readonly projects: string;
   readonly secrets: string;
   readonly secretsEnv: string;
+  /** One cached GitHub installation token per repository, shared by concurrent aos sessions. */
+  readonly githubTokens: string;
   readonly sessions: string;
   /** Per-launch runtime directories, removed when the launch ends. */
   readonly run: string;
@@ -43,6 +45,7 @@ export function aosPaths(root: string): AosPaths {
     projects: join(root, "projects"),
     secrets,
     secretsEnv: join(secrets, "env"),
+    githubTokens: join(secrets, "github-tokens"),
     sessions: join(root, "state", "sessions"),
     run: join(root, "state", "run"),
     worktrees: join(root, "state", "worktrees"),
