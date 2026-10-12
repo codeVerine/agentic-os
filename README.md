@@ -162,10 +162,10 @@ own branch and its own files, without waiting on each other or on git status in 
   defaults.
 - **Out of scope.** `aos` does not open a PR, push anywhere, or touch the repository's remote; "merge" is a
   local `git merge`, same as you'd run by hand, and every host git call `aos worktree merge/rm/prune` makes
-  runs with the same hook and fsmonitor protection described in "Warning: host git in agent-written
-  projects" below. Worktrees narrow the blast radius of a bad edit to their own branch, but a leased
-  worktree's `.git` is still the project's real, shared one, and `aos` adds no other git-tampering
-  protection beyond that.
+  runs with the hook and fsmonitor protection described in "Security" below, which does not cover filter
+  drivers, merge drivers or `gpg.program`. Worktrees narrow the blast radius of a bad edit to their own
+  branch, but a leased worktree's `.git` is still the project's real, shared one, and `aos` adds no other
+  git-tampering protection beyond that.
 
 ## Subscriptions and API keys
 
@@ -280,18 +280,26 @@ How the defaults are applied:
 Full autonomy does not make the container harmless: an agent can still use the network, its own login and the
 API keys passed to it, and write anything in the project. See "Deliberately skipped for now".
 
-## Warning: host git in agent-written projects
+## Security
+
+> **TODO:** a git guard that blocks and reviews agent changes to git hooks and executable git config is
+> designed but not built. The design, the open gaps and the decisions still to make are in
+> [docs/security.md](docs/security.md).
 
 Agents can write anything into a project, including `.git/config`, `.git/hooks/*` and files that git runs
 filters or an fsmonitor on. Every host git call `aos` itself makes, for Sandcastle and for its own worktree
 commands (`aos worktree merge/rm/prune`, and branch setup on a fresh worktree), runs with
-`core.hooksPath=/dev/null` and `core.fsmonitor=false`, but your own git commands, editor integrations and
-tools such as `gh` or `pre-commit` do not.
+`core.hooksPath=/dev/null` and `core.fsmonitor=false`. That stops hooks and fsmonitor only. Filter drivers,
+merge drivers and `gpg.program` planted in `.git/config` still run on the Mac, including during
+`aos worktree list` and `aos worktree merge`. Your own git commands, editor integrations and tools such as
+`gh` or `pre-commit` have no protection at all.
 
-Do not run hook-sensitive git commands (`commit`, `checkout`, `merge`, `pull`, `rebase`, `push`) on the Mac
-inside a project an agent has worked in. Review the changes from inside an agent session instead (for
-example `!git diff` in Pi or Codex). If you must use git on the Mac there, inspect `.git/config` and
-`.git/hooks` first.
+- Do not run `aos worktree list` or `aos worktree merge` in a project you suspect an agent tampered with.
+  Inspect `.git/config` and `.git/info/attributes` first.
+- Do not run hook-sensitive git commands (`commit`, `checkout`, `merge`, `pull`, `rebase`, `push`) on the Mac
+  inside a project an agent has worked in. Review the changes from inside an agent session instead (for
+  example `!git diff` in Pi or Codex). If you must use git on the Mac there, inspect `.git/config`,
+  `.git/hooks` and `.git/info/attributes` first.
 
 ## Deliberately skipped for now
 
