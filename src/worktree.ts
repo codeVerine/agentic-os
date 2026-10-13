@@ -3,23 +3,18 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentName } from "./agents.ts";
 import { AosError } from "./errors.ts";
-import { checkoutNewBranch, deleteBranch, git } from "./git.ts";
+import { checkoutNewBranch, currentBranch, deleteBranch, git } from "./git.ts";
 import { assertGitMetadataMountable, type AosPaths, type ProjectLocation, sandboxName } from "./paths.ts";
 import { projectKey, readRegistry, type WorktreeRecord, withRegistryLock } from "./registry.ts";
 import { detectResumeIntent, extractExplicitSessionId, findWorktreeForSession, mostRecentlyUsed } from "./resume.ts";
-import {
-  assertTreehouseInstalled,
-  leaseEnded,
-  leaseWorktree,
-  liveHolderPid,
-  returnWorktree,
-  treehouseStatus,
-} from "./treehouse.ts";
+import { assertTreehouseInstalled, leaseWorktree, liveHolderPid, returnWorktree, treehouseStatus } from "./treehouse.ts";
 
 export interface WorktreeTarget {
   readonly hostRoot: string;
   readonly sandboxName: string;
   readonly branch: string | undefined;
+  /** Directory the agent starts in, relative to `hostRoot`, POSIX separators, "" at the root. */
+  readonly subdir: string;
 }
 
 /**
@@ -54,7 +49,7 @@ export async function resolveWorktreeTarget(
         picked = found.record;
       } else if (found.kind === "main-checkout") {
         console.error(`aos: ${agentName} session "${explicitId}" ran in ${project.root} itself, not in an aos worktree; resuming it there.`);
-        return { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined };
+        return { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined, subdir: project.subdir };
       } else {
         console.error(`aos: no aos worktree for this project has a ${agentName} session "${explicitId}"; leasing a new worktree.`);
       }
@@ -62,29 +57,18 @@ export async function resolveWorktreeTarget(
       picked = mostRecentlyUsed(records, agentName);
     }
 
-    if (picked && existsSync(picked.worktreePath)) {
-      const status = treehouseStatus(project.root);
-      const pid = liveHolderPid(picked, status);
-      if (pid !== undefined) {
-        throw new AosError(
-          `The ${agentName} worktree ${picked.id} (${picked.branch}) is in use by running aos process ${pid}. Exit that session first, or start a new one without a resume flag.`,
-        );
+    if (picked) {
+      const claim = await claimWorktree(paths, key, picked.id, project.root);
+      if (claim.kind === "claimed") {
+        const { record } = claim;
+        return { hostRoot: record.worktreePath, sandboxName: record.sandboxName, branch: record.branch, subdir: record.subdir ?? "" };
       }
-      if (leaseEnded(picked, status)) {
-        console.error(`aos: the treehouse lease of that ${agentName} worktree ended outside aos, so its folder may belong to another session now; leasing a new one.`);
-      } else {
-        await withRegistryLock(paths, key, (all) => {
-          const record = all.find((r) => r.id === picked?.id);
-          if (record) {
-            record.lastUsedAt = new Date().toISOString();
-            record.activePid = process.pid;
-          }
-          return { records: all, value: undefined };
-        });
-        return { hostRoot: picked.worktreePath, sandboxName: picked.sandboxName, branch: picked.branch };
-      }
-    } else if (picked) console.error(`aos: the worktree for that ${agentName} session is gone from disk; leasing a new one.`);
-    else if (!explicitId) console.error(`aos: no existing ${agentName} worktree found for this project yet; leasing a new one.`);
+      console.error(
+        claim.kind === "ended"
+          ? `aos: the treehouse lease of that ${agentName} worktree ended outside aos, so its folder may belong to another session now; leasing a new one.`
+          : `aos: the worktree for that ${agentName} session is gone from disk; leasing a new one.`,
+      );
+    } else if (!explicitId) console.error(`aos: no existing ${agentName} worktree found for this project yet; leasing a new one.`);
   }
 
   const holder = `aos-${process.pid}`;
@@ -103,17 +87,54 @@ export async function resolveWorktreeTarget(
       branch,
       worktreePath: lease.path,
       sandboxName: sandboxName(project.name, `${key}::${branch}`),
+      subdir: project.subdir,
       createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
       leaseId: lease.leaseId,
       activePid: process.pid,
     };
     await withRegistryLock(paths, key, (records) => ({ records: [...records, record], value: undefined }));
-    return { hostRoot: record.worktreePath, sandboxName: record.sandboxName, branch: record.branch };
+    return { hostRoot: record.worktreePath, sandboxName: record.sandboxName, branch: record.branch, subdir: project.subdir };
   } catch (error) {
     releaseUnregisteredLease(project.root, lease, branchCreated ? branch : undefined);
     throw error;
   }
+}
+
+type Claim = { readonly kind: "claimed"; readonly record: WorktreeRecord } | { readonly kind: "ended" } | { readonly kind: "gone" };
+
+/**
+ * Checks that a recorded worktree is free and still this session's, and marks it in use by this process,
+ * all under the registry lock so two resumes (or a resume and `aos worktree rm`) never both take it.
+ * Throws when another aos process runs in it, or when treehouse cannot confirm that the lease and the
+ * branch checked out are the ones aos recorded: guessing could put an old conversation into the files
+ * of whichever session treehouse gave the folder to since.
+ */
+async function claimWorktree(paths: AosPaths, key: string, id: string, projectRoot: string): Promise<Claim> {
+  return withRegistryLock(paths, key, (records): { records: WorktreeRecord[]; value: Claim } => {
+    const record = records.find((r) => r.id === id);
+    if (!record || !existsSync(record.worktreePath)) return { records, value: { kind: "gone" } };
+    const status = treehouseStatus(projectRoot);
+    const pid = liveHolderPid(record, status);
+    if (pid !== undefined) {
+      throw new AosError(
+        `The ${record.agent} worktree ${record.id} (${record.branch}) is in use by running aos process ${pid}. Exit that session first, or start a new one without a resume flag.`,
+      );
+    }
+    const cannotVerify = (why: string): AosError =>
+      new AosError(`Cannot resume ${record.branch}: ${why}, so aos cannot verify that ${record.worktreePath} is still its worktree. Fix that, or start a new session without a resume flag.`);
+    if (status === undefined) throw cannotVerify("treehouse status is unavailable");
+    const entry = status.find((e) => e.path === record.worktreePath);
+    if (entry === undefined) throw cannotVerify("treehouse does not list that folder in this project's pool");
+    if (entry.lease_id !== record.leaseId) return { records, value: { kind: "ended" } };
+    const branch = currentBranch(record.worktreePath);
+    if (branch !== record.branch) {
+      throw cannotVerify(`the folder is not on its branch (${branch === "" ? "a detached HEAD" : branch} is checked out there)`);
+    }
+    record.lastUsedAt = new Date().toISOString();
+    record.activePid = process.pid;
+    return { records, value: { kind: "claimed", record } };
+  });
 }
 
 /**

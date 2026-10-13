@@ -12,6 +12,7 @@ import {
   rmSync,
   statSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -88,10 +89,11 @@ function lockOwner(lockPath: string): string | undefined {
 
 /**
  * Runs `run` while holding an exclusive lock file at `lockPath`, shared by every aos process on this Mac.
- * A lock older than 30 seconds is taken as abandoned, and the lock is only released by the holder that
- * wrote it, so a holder whose lock was broken never removes its successor's.
+ * The holder refreshes the lock file while `run` is in flight, so a lock goes stale only once its holder
+ * has stopped, and it is only released by the holder that wrote it, so a holder whose lock was broken
+ * never removes its successor's.
  */
-export async function withFileLock<T>(lockPath: string, run: () => Promise<T>): Promise<T> {
+export async function withFileLock<T>(lockPath: string, run: () => Promise<T>, staleMs: number = LOCK_STALE_MS): Promise<T> {
   const owner = randomBytes(16).toString("hex");
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   for (;;) {
@@ -101,7 +103,7 @@ export async function withFileLock<T>(lockPath: string, run: () => Promise<T>): 
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) unlinkSync(lockPath);
+        if (Date.now() - statSync(lockPath).mtimeMs > staleMs) unlinkSync(lockPath);
       } catch {
         // The holder released it between the checks; try to take it again.
       }
@@ -109,9 +111,18 @@ export async function withFileLock<T>(lockPath: string, run: () => Promise<T>): 
       await sleep(LOCK_POLL_MS);
     }
   }
+  const renewal = setInterval(() => {
+    try {
+      if (lockOwner(lockPath) === owner) utimesSync(lockPath, new Date(), new Date());
+    } catch {
+      // Released or broken between the check and the touch; the finally below sorts out ownership.
+    }
+  }, staleMs / 3);
+  renewal.unref();
   try {
     return await run();
   } finally {
+    clearInterval(renewal);
     if (lockOwner(lockPath) === owner) rmSync(lockPath, { force: true });
   }
 }

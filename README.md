@@ -122,7 +122,9 @@ from. Several agents, or several runs of the same agent, can then work on one pr
 own branch and its own files, without waiting on each other or on git status in a shared checkout.
 
 - **Base commit.** The new branch starts from the `HEAD` of wherever you ran `aos` from, not from whatever
-  commit treehouse happened to leave the leased worktree on.
+  commit treehouse happened to leave the leased worktree on. `aos` leases with `treehouse get --no-fetch`,
+  so a launch never waits on the project's remote and works with it unreachable or without credentials on
+  the Mac.
 - **The lease stays held.** Unlike a plain `treehouse get`, `aos` never returns the lease when the agent's
   session ends: the worktree and its branch are kept until you explicitly run `aos worktree rm` (or
   `prune`), so treehouse's own prune and destroy leave it alone in the meantime. Landing the work: run
@@ -155,7 +157,15 @@ own branch and its own files, without waiting on each other or on git status in 
   - A worktree that another `aos` process is still running an agent in is refused, with that process's pid
     in the message, because two agents in one worktree would edit the same files and write the same
     transcript. One whose treehouse lease ended outside `aos` is not resumed either: treehouse may have
-    given its folder to another session, so `aos` leases a new worktree instead.
+    given its folder to another session, so `aos` leases a new worktree instead. Checking and claiming a
+    worktree happen together under the project's registry lock, and `aos worktree rm`/`prune` re-check
+    under that same lock before they return a lease, so two `aos` processes never end up in one worktree.
+  - A worktree is only resumed after `treehouse status` positively shows its recorded lease on that
+    folder and the recorded `aos/` branch is checked out there. When treehouse is unavailable or does
+    not list the folder, or the branch was switched, `aos` refuses with a message instead of guessing.
+  - The agent starts in the same directory of the worktree it started in, wherever you run the resume
+    from, because every agent keys its conversations by working directory. Worktrees created before
+    `aos` recorded this resume at the worktree root.
 - **Container path.** Each worktree's container path (`/home/agent/projects/<name>-<hash>`) is hashed from
   the project and its own `aos/` branch name, not from the worktree's host path. treehouse reuses the same
   host directory for later, unrelated leases once one is returned, and since the container path is what keys
@@ -167,7 +177,8 @@ own branch and its own files, without waiting on each other or on git status in 
 - **Config file.** treehouse's own `treehouse.toml` (`treehouse init` to create one) controls where the pool
   lives and how large it grows; `aos` does not manage that file. Without one, treehouse uses its own
   defaults.
-- **Out of scope.** The host `aos` commands do not open a PR, push anywhere, or touch the repository's remote.
+- **Out of scope.** The host `aos` commands do not open a PR or push anywhere, and they never fetch from the
+  repository's remote (the lease uses `--no-fetch`; only `treehouse` run by hand does).
   Agents can pull, push and open PRs through their own GitHub access ("GitHub access" below); "merge" is a
   local `git merge`, same as you'd run by hand, and every host git call `aos worktree merge/rm/prune` makes
   runs with the hook and fsmonitor protection described in "Security" below, which does not cover filter

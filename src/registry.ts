@@ -18,6 +18,8 @@ export interface WorktreeRecord {
   readonly worktreePath: string;
   /** Container directory name this worktree's launches mount at, stable for the worktree's life. */
   readonly sandboxName: string;
+  /** Launch directory relative to the worktree root, POSIX separators, "" at the root; resume starts the agent here. Absent on records from before it was kept. */
+  readonly subdir?: string;
   /** Commit the branch was created from; set by earlier aos versions, no longer written or read. */
   readonly baseRev?: string;
   readonly createdAt: string;

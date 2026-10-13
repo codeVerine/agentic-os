@@ -67,10 +67,18 @@ export function mainCheckout(root: string): string {
   return first.slice("worktree ".length);
 }
 
-/** Working tree has no uncommitted changes. */
+/**
+ * Working tree has no uncommitted changes, new files included: `--untracked-files=all` overrides a
+ * `status.showUntrackedFiles=no` config that would otherwise hide them.
+ */
 export function isWorktreeClean(worktreePath: string): boolean {
-  const result = spawnGit(["-C", worktreePath, "status", "--porcelain"]);
+  const result = spawnGit(["-C", worktreePath, "status", "--porcelain", "--untracked-files=all"]);
   return result.status === 0 && result.stdout.trim() === "";
+}
+
+/** Name of the branch checked out in `worktreePath`, or "" on a detached HEAD or when git fails. */
+export function currentBranch(worktreePath: string): string {
+  return gitOrEmpty(worktreePath, "symbolic-ref", "--short", "--quiet", "HEAD");
 }
 
 /** `branch`'s tip is already an ancestor of `into`'s current HEAD. */

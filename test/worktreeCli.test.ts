@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { after, describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { aosPaths, locateProject } from "../src/paths.ts";
 import type { WorktreeRecord } from "../src/registry.ts";
 import { initCommittedRepo } from "./helpers.ts";
 
 // A fake treehouse binary lets these tests exercise the lease and return paths without the real CLI
 // installed. It logs every call, leases whatever path AOS_FAKE_LEASE_PATH names, reports
-// AOS_FAKE_STATUS as its pool status, and fails `return` for any path containing "fail-return".
+// AOS_FAKE_STATUS as its pool status (failing instead when AOS_FAKE_STATUS_FAIL is set, after sleeping
+// AOS_FAKE_STATUS_DELAY seconds and running the AOS_FAKE_STATUS_HOOK shell snippet), and fails `return`
+// for any path containing "fail-return".
 // Like the real one, `return` detaches the worktree and refuses when --if-lease-id differs from the
 // current lease (AOS_FAKE_LEASE_ID, "fake-lease" by default). The env var must be set before
 // treehouse.ts is first evaluated, which worktree.ts does on import, so worktree.ts is imported
@@ -39,7 +43,11 @@ case "$1" in
       shift
     done
     git -C "$path" checkout -q --detach 2>/dev/null ;;
-  status) printf '%s\\n' "\${AOS_FAKE_STATUS:-[]}" ;;
+  status)
+    [ -n "$AOS_FAKE_STATUS_HOOK" ] && sh -c "$AOS_FAKE_STATUS_HOOK"
+    [ -n "$AOS_FAKE_STATUS_DELAY" ] && sleep "$AOS_FAKE_STATUS_DELAY"
+    [ -n "$AOS_FAKE_STATUS_FAIL" ] && { echo "status unavailable" >&2; exit 1; }
+    printf '%s\\n' "\${AOS_FAKE_STATUS:-[]}" ;;
 esac
 exit 0
 `,
@@ -433,7 +441,188 @@ describe("resolveWorktreeTarget", () => {
 
     const target = await resolveWorktreeTarget("claude", ["--resume", "session-main"], project, r.paths, agentDir);
 
-    assert.deepEqual(target, { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined });
+    assert.deepEqual(target, { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined, subdir: "" });
     assert.equal(treehouseCalls().filter((call) => call.startsWith("get")).length, leasesBefore);
+  });
+});
+
+const resumeChild = fileURLToPath(new URL("./fixtures/resumeTarget.ts", import.meta.url));
+
+const statusOf = (record: WorktreeRecord, leaseId = "fake-lease"): string =>
+  JSON.stringify([{ name: record.id, path: record.worktreePath, status: "leased", lease_id: leaseId, lease_holder: "aos-999999999" }]);
+
+function slot(r: Repo, name: string): string {
+  const path = join(base, name);
+  execFileSync("git", ["-C", r.main, "worktree", "add", "--quiet", "--detach", path]);
+  return path;
+}
+
+interface ResumeOutcome {
+  readonly ok: boolean;
+  readonly hostRoot?: string;
+  readonly error?: string;
+}
+
+/** Runs `aos claude --continue` as its own process, which stays alive like a running agent until `stop`. */
+function startResume(r: Repo, agentDir: string, env: NodeJS.ProcessEnv = {}): { outcome: Promise<ResumeOutcome>; stop: () => void } {
+  const child = spawn(process.execPath, [resumeChild, r.main, "claude", r.paths.root, agentDir, "--continue"], {
+    env: { ...process.env, ...env },
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const outcome = new Promise<ResumeOutcome>((resolve, reject) => {
+    createInterface({ input: child.stdout }).once("line", (line) => resolve(JSON.parse(line) as ResumeOutcome));
+    child.once("error", reject);
+    child.once("exit", () => reject(new Error("resume process exited without reporting")));
+  });
+  return { outcome, stop: () => child.kill() };
+}
+
+describe("resuming a recorded worktree", () => {
+  after(() => {
+    delete process.env.AOS_FAKE_STATUS;
+    delete process.env.AOS_FAKE_STATUS_FAIL;
+  });
+
+  test("refuses when treehouse status is unavailable, rather than guessing the folder is still ours", async () => {
+    const r = repo("verify-unavailable");
+    const record = branchWorktree(r, "verify-unavailable-1");
+    await seed(r, record);
+    process.env.AOS_FAKE_STATUS_FAIL = "1";
+
+    await assert.rejects(
+      resolveWorktreeTarget("claude", ["--continue"], locateProject(r.main), r.paths, join(base, "verify-agent")),
+      /treehouse status is unavailable/,
+    );
+    assert.equal(readRegistry(r.paths, r.key)[0]?.activePid, undefined);
+    delete process.env.AOS_FAKE_STATUS_FAIL;
+  });
+
+  test("refuses when treehouse does not list the folder at all", async () => {
+    const r = repo("verify-unlisted");
+    const record = branchWorktree(r, "verify-unlisted-1");
+    await seed(r, record);
+    process.env.AOS_FAKE_STATUS = "[]";
+
+    await assert.rejects(
+      resolveWorktreeTarget("claude", ["--continue"], locateProject(r.main), r.paths, join(base, "verify-agent")),
+      /does not list/,
+    );
+  });
+
+  test("refuses when the recorded branch is not the one checked out in the folder", async () => {
+    const r = repo("verify-branch");
+    const record = branchWorktree(r, "verify-branch-1");
+    await seed(r, record);
+    execFileSync("git", ["-C", record.worktreePath, "checkout", "-q", "--detach"]);
+    process.env.AOS_FAKE_STATUS = statusOf(record);
+
+    await assert.rejects(
+      resolveWorktreeTarget("claude", ["--continue"], locateProject(r.main), r.paths, join(base, "verify-agent")),
+      /not on its branch/,
+    );
+  });
+
+  test("resumes into the recorded worktree at the subdirectory the conversation started in", async () => {
+    const r = repo("resume-subdir");
+    const record = { ...branchWorktree(r, "resume-subdir-1"), subdir: "packages/app" };
+    await seed(r, record);
+    process.env.AOS_FAKE_STATUS = statusOf(record);
+
+    const target = await resolveWorktreeTarget("claude", ["--continue"], locateProject(r.main), r.paths, join(base, "verify-agent"));
+
+    assert.equal(target.hostRoot, record.worktreePath);
+    assert.equal(target.subdir, "packages/app");
+    assert.equal(readRegistry(r.paths, r.key)[0]?.activePid, process.pid);
+  });
+
+  test("a record from before subdirectories were kept resumes at the worktree root", async () => {
+    const r = repo("resume-no-subdir");
+    const record = branchWorktree(r, "resume-no-subdir-1");
+    await seed(r, record);
+    process.env.AOS_FAKE_STATUS = statusOf(record);
+    mkdirSync(join(r.main, "sub"));
+
+    const target = await resolveWorktreeTarget("claude", ["--continue"], locateProject(join(r.main, "sub")), r.paths, join(base, "verify-agent"));
+
+    assert.equal(target.subdir, "");
+  });
+});
+
+describe("leasing a new worktree", () => {
+  test("records the launch subdirectory and leases without fetching the remote", async () => {
+    const r = repo("lease-subdir");
+    mkdirSync(join(r.main, "packages", "app"), { recursive: true });
+    process.env.AOS_FAKE_LEASE_PATH = slot(r, "lease-subdir-slot");
+    const before = treehouseCalls().length;
+
+    const target = await resolveWorktreeTarget("claude", [], locateProject(join(r.main, "packages", "app")), r.paths, join(base, "lease-agent"));
+
+    assert.equal(target.subdir, "packages/app");
+    assert.equal(readRegistry(r.paths, r.key)[0]?.subdir, "packages/app");
+    const lease = treehouseCalls().slice(before).find((call) => call.startsWith("get "));
+    assert.ok(lease?.split(" ").includes("--no-fetch"), `treehouse get was run as: ${lease}`);
+  });
+});
+
+describe("two aos processes resuming and removing the same worktree", () => {
+  after(() => {
+    delete process.env.AOS_FAKE_STATUS;
+    delete process.env.AOS_FAKE_STATUS_HOOK;
+  });
+
+  test("resumes started together claim the worktree once", async () => {
+    const r = repo("resume-race");
+    const record = branchWorktree(r, "resume-race-1");
+    await seed(r, record);
+    const env = { AOS_FAKE_STATUS: statusOf(record), AOS_FAKE_STATUS_DELAY: "0.5" };
+    const runs = [startResume(r, join(base, "race-agent"), env), startResume(r, join(base, "race-agent"), env)];
+    try {
+      const outcomes = await Promise.all(runs.map((run) => run.outcome));
+      assert.deepEqual(outcomes.map((o) => o.ok).sort(), [false, true]);
+      assert.match(outcomes.find((o) => !o.ok)?.error ?? "", /in use by running aos process/);
+    } finally {
+      for (const run of runs) run.stop();
+    }
+  });
+
+  test("rm re-checks the worktree under the registry lock, so a resume that claims it first wins", async () => {
+    const r = repo("rm-race");
+    const record = branchWorktree(r, "rm-race-1");
+    await seed(r, record);
+    process.env.AOS_FAKE_LEASE_PATH = slot(r, "rm-race-slot");
+    process.env.AOS_FAKE_STATUS = statusOf(record);
+    const out = join(base, "rm-race.out");
+    const pidFile = join(base, "rm-race.pid");
+    const started = join(base, "rm-race.started");
+    // While rm reads the pool status, a second aos starts resuming the same worktree and gets up to
+    // two seconds to claim it. Only a rm that holds the registry lock across its checks blocks that claim.
+    process.env.AOS_FAKE_STATUS_HOOK =
+      `[ -e '${started}' ] && exit 0; touch '${started}'; ` +
+      `'${process.execPath}' '${resumeChild}' '${r.main}' claude '${r.paths.root}' '${join(base, "rm-race-agent")}' --continue ` +
+      `> '${out}' 2>/dev/null < /dev/null & echo $! > '${pidFile}'; i=0; while [ $i -lt 20 ] && [ ! -s '${out}' ]; do sleep 0.1; i=$((i+1)); done`;
+    let resumed: ResumeOutcome | undefined;
+    try {
+      await worktreeCommand(["rm", record.id], r.main, r.paths).catch(() => 1);
+      for (let i = 0; i < 100 && !(existsSync(out) && readFileSync(out, "utf8").includes("\n")); i++) await new Promise((r) => setTimeout(r, 100));
+      resumed = JSON.parse(readFileSync(out, "utf8").trim().split("\n")[0] ?? "{}") as ResumeOutcome;
+    } finally {
+      if (existsSync(pidFile)) process.kill(Number(readFileSync(pidFile, "utf8")));
+    }
+
+    assert.notEqual(resumed?.hostRoot, record.worktreePath, "the resumed agent was handed the worktree rm took back");
+    assert.ok(resumed?.ok, `the resuming process failed: ${resumed?.error}`);
+  });
+});
+
+describe("aos worktree rm with status.showUntrackedFiles=no", () => {
+  test("refuses a worktree holding a new untracked file without --force", async () => {
+    const r = repo("rm-hidden-untracked");
+    const record = branchWorktree(r, "rm-hidden-1");
+    await seed(r, record);
+    execFileSync("git", ["-C", r.main, "config", "status.showUntrackedFiles", "no"]);
+    writeFileSync(join(record.worktreePath, "NEW_WORK.md"), "unsaved");
+
+    await assert.rejects(worktreeCommand(["rm", record.id], r.main, r.paths), /uncommitted changes/);
+    assert.ok(existsSync(join(record.worktreePath, "NEW_WORK.md")));
   });
 });
