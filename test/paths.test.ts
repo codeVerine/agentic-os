@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { AosError } from "../src/errors.ts";
-import { aosRoot, locateProject, sandboxName } from "../src/paths.ts";
+import { aosRoot, locateProject, sandboxName, sharedGitDirMount } from "../src/paths.ts";
 import { commitEmpty, initRepo } from "./helpers.ts";
 
 describe("aosRoot", () => {
@@ -127,5 +127,23 @@ describe("locateProject", () => {
         (error) => error instanceof AosError && error.message.includes("git submodule") && error.message.includes(super_),
       );
     }
+  });
+});
+
+describe("sharedGitDirMount", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-gitmount-")));
+  after(() => rmSync(base, { recursive: true, force: true }));
+
+  test("is undefined for a main checkout, whose .git directory lives inside the project mount", () => {
+    const main = initRepo(join(base, "main"));
+    assert.equal(sharedGitDirMount(main), undefined);
+  });
+
+  test("is the main repository's git directory for a linked worktree", () => {
+    const main = initRepo(join(base, "with-worktree"));
+    commitEmpty(main);
+    const linked = join(base, "linked");
+    execFileSync("git", ["-C", main, "worktree", "add", "--quiet", "-b", "feature", linked]);
+    assert.equal(sharedGitDirMount(linked), join(main, ".git"));
   });
 });

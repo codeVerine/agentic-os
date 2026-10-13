@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
-import { hookSafeGitEnv, spawnGit } from "../src/git.ts";
+import { hookSafeGitEnv, safeDirectoryEnv, spawnGit } from "../src/git.ts";
+import { initRepo } from "./helpers.ts";
 
 describe("hookSafeGitEnv", () => {
   test("disables hooks and fsmonitor via GIT_CONFIG_* env vars", () => {
@@ -14,6 +16,34 @@ describe("hookSafeGitEnv", () => {
       GIT_CONFIG_KEY_1: "core.fsmonitor",
       GIT_CONFIG_VALUE_1: "false",
     });
+  });
+});
+
+describe("safeDirectoryEnv", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "aos-safedir-")));
+  after(() => rmSync(base, { recursive: true, force: true }));
+
+  const otherOwner = { GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" };
+  const status = (dir: string, env: Record<string, string>) =>
+    spawnSync("git", ["-C", dir, "status"], { encoding: "utf8", env: { ...process.env, ...otherOwner, ...env } });
+
+  test("lists each path as one exact safe.directory entry", () => {
+    assert.deepEqual(safeDirectoryEnv(["/home/agent/projects/app-1a2b3c4d", "/Users/me/app/.git"]), {
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "safe.directory",
+      GIT_CONFIG_VALUE_0: "/home/agent/projects/app-1a2b3c4d",
+      GIT_CONFIG_KEY_1: "safe.directory",
+      GIT_CONFIG_VALUE_1: "/Users/me/app/.git",
+    });
+  });
+
+  test("lets git use a repository owned by someone else, and only the listed one", () => {
+    const trusted = initRepo(join(base, "trusted"));
+    const other = initRepo(join(base, "other"));
+
+    assert.match(status(trusted, {}).stderr, /dubious ownership/);
+    assert.equal(status(trusted, safeDirectoryEnv([trusted])).status, 0);
+    assert.match(status(other, safeDirectoryEnv([trusted])).stderr, /dubious ownership/);
   });
 });
 

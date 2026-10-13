@@ -13,7 +13,6 @@ export interface AosPaths {
   readonly secretsEnv: string;
   /** One cached GitHub installation token per repository, shared by concurrent aos sessions. */
   readonly githubTokens: string;
-  readonly sessions: string;
   /** Per-launch runtime directories, removed when the launch ends. */
   readonly run: string;
   /** One JSON registry file per project (by git-common-dir hash) of aos-leased worktrees. */
@@ -47,7 +46,6 @@ export function aosPaths(root: string): AosPaths {
     secrets,
     secretsEnv: join(secrets, "env"),
     githubTokens: join(secrets, "github-tokens"),
-    sessions: join(root, "state", "sessions"),
     run: join(root, "state", "run"),
     worktrees: join(root, "state", "worktrees"),
   };
@@ -119,6 +117,17 @@ export function assertGitMetadataMountable(root: string): void {
  */
 export function assertProjectEnvNotLinked(root: string): void {
   readTextFileInside(root, join(root, ".sandcastle", ".env"));
+}
+
+/**
+ * Host path of the shared git directory Sandcastle mounts at that same path for a linked worktree, or
+ * undefined when `root/.git` is a directory (a main checkout keeps its git directory inside the project mount).
+ */
+export function sharedGitDirMount(root: string): string | undefined {
+  const dotGit = join(root, ".git");
+  if (lstatSync(dotGit, { throwIfNoEntry: false })?.isFile() !== true) return undefined;
+  const gitdir = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"))?.[1]?.trim();
+  return gitdir === undefined ? undefined : resolve(gitdir, "..", "..");
 }
 
 /**

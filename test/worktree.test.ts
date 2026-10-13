@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -145,6 +145,23 @@ describe("findWorktreeForSession", () => {
     const records = [record("codex", sandbox)];
 
     const found = await findWorktreeForSession("codex", "session-xyz", agentDir, records, mainSandbox);
+    assert.equal(found.kind === "worktree" && found.record.sandboxName, sandbox);
+  });
+
+  test("codex: reads only the first line of a rollout, however large the conversation has grown", async () => {
+    const agentDir = join(base, "codex-agent-large");
+    const sandbox = "repo-bada5511";
+    const dayDir = join(agentDir, "sessions", "2026", "09", "29");
+    mkdirSync(dayDir, { recursive: true });
+    const rollout = join(dayDir, "rollout-2026-09-29T00-00-00-session-large.jsonl");
+    writeFileSync(
+      rollout,
+      `\n${JSON.stringify({ type: "session_meta", payload: { id: "session-large", cwd: `/home/agent/projects/${sandbox}` } })}\n`,
+    );
+    // A sparse tail past V8's maximum string length: reading the whole file as text throws.
+    truncateSync(rollout, 600 * 1024 * 1024);
+
+    const found = await findWorktreeForSession("codex", "session-large", agentDir, [record("codex", sandbox)], mainSandbox);
     assert.equal(found.kind === "worktree" && found.record.sandboxName, sandbox);
   });
 

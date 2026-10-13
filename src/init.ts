@@ -6,7 +6,6 @@ import { ensureAgentStateDirs, ensureSecretsEnvFile } from "./secrets.ts";
 
 export function initRoot(paths: AosPaths): void {
   mkdirSync(paths.projects, { recursive: true });
-  mkdirSync(paths.sessions, { recursive: true });
   ensurePrivateDir(paths.secrets);
   const created = ensureSecretsEnvFile(paths.secretsEnv);
   for (const spec of AGENT_SPECS) ensureAgentStateDirs(paths.secrets, spec);

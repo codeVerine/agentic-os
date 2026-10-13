@@ -18,6 +18,21 @@ export function hookSafeGitEnv(): Record<string, string> {
 }
 
 /**
+ * Env that makes git trust exactly `paths` as `safe.directory`, for the container's git. A bind mount's
+ * files are not owned by the container user, so git refuses them with "dubious ownership" unless the path
+ * is listed. The env vars are command-line scope, which git honours for `safe.directory`, and they spare
+ * aos from quoting host paths into a `git config` shell command.
+ */
+export function safeDirectoryEnv(paths: readonly string[]): Record<string, string> {
+  const env: Record<string, string> = { GIT_CONFIG_COUNT: String(paths.length) };
+  paths.forEach((path, index) => {
+    env[`GIT_CONFIG_KEY_${index}`] = "safe.directory";
+    env[`GIT_CONFIG_VALUE_${index}`] = path;
+  });
+  return env;
+}
+
+/**
  * Runs `git` on the host with the same hook and fsmonitor protection aos gives Sandcastle's own
  * git calls (see `hookSafeGitEnv`), so every host-side git call aos makes shares it, no matter the
  * caller's own `env` or the ambient process env it runs under.

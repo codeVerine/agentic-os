@@ -7,10 +7,17 @@ import { applyDefaults } from "./defaults.ts";
 import { assertImageMatchesHost, hostIds, IMAGE, launchMarkerPath, removeLaunchContainers, SANDBOX_HOME } from "./docker.ts";
 import { AosError } from "./errors.ts";
 import { cleanupOnExit } from "./exit.ts";
-import { gitOrEmpty } from "./git.ts";
+import { gitOrEmpty, safeDirectoryEnv } from "./git.ts";
 import { prepareGithubAccess } from "./github.ts";
 import { terminalEnv } from "./hostenv.ts";
-import { type AosPaths, assertInitialised, assertProjectEnvNotLinked, locateProject, type ProjectLocation } from "./paths.ts";
+import {
+  type AosPaths,
+  assertInitialised,
+  assertProjectEnvNotLinked,
+  locateProject,
+  type ProjectLocation,
+  sharedGitDirMount,
+} from "./paths.ts";
 import { ensureAgentStateDirs, readSecretsEnv, selectAgentEnv } from "./secrets.ts";
 import { containerWorkdir, resolveWorktreeTarget } from "./worktree.ts";
 
@@ -48,6 +55,8 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   // runs from a second, per-project mount of the same host directory instead.
   const sandboxProjectRoot = `${SANDBOX_PROJECTS_DIR}/${target.sandboxName}`;
   await spec.trustProject?.(agentDir, sandboxProjectRoot);
+  const sharedGitDir = sharedGitDirMount(target.hostRoot);
+  const safeDirectories = sharedGitDir === undefined ? [sandboxProjectRoot] : [sandboxProjectRoot, sharedGitDir];
   const workdir = containerWorkdir(sandboxProjectRoot, target.hostRoot, project.subdir);
   const setup = spec.launchSetup ? `${spec.launchSetup} && ` : "";
   const argv = ["sh", "-c", `cd "$1" && shift && ${setup}exec "$@"`, "aos", workdir, spec.command, ...agentArgs];
@@ -96,7 +105,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   try {
     const result = await interactive({
       name: `aos ${spec.name} (${project.name}${target.branch ? ` @ ${target.branch}` : ""})`,
-      agent: interactiveProvider(spec, argv, paths.sessions),
+      agent: interactiveProvider(spec, argv),
       sandbox,
       cwd: target.hostRoot,
       branchStrategy: { type: "head" },
@@ -106,6 +115,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
         ...spec.launchEnv,
         ...selectAgentEnv(spec, secrets),
         ...github.env,
+        ...safeDirectoryEnv(safeDirectories),
       },
     });
     return result.exitCode;
