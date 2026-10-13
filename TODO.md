@@ -2,15 +2,10 @@
 
 Work that is understood but not built yet. The grouped landing review and the `includeIf` guard are listed under "Deferred work" in [docs/security.md](docs/security.md).
 
-## Update the image's agent CLIs: `aos image update`
+## Per-agent self-update opt-outs inside containers
 
-**Problem.** The agent CLI versions (`claude-code`, `codex`, `opencode` and `pi`) are pinned in
-`docker/Dockerfile`. Moving to a newer version means editing the Dockerfile by hand and running
-`aos image build`, with no view of what changed. Inside a container the agents also run their own
-self-update checks, which work against an image whose versions are pinned on purpose.
+Done: `aos image update` checks the pinned agent CLIs, shows the diff and rebuilds on confirmation, and
+the image sets `DISABLE_AUTOUPDATER=1` (Claude Code's documented opt-out) so a pinned install stays pinned.
 
-**Planned fix.** An `aos image update` command that:
-
-- checks for a newer version of each pinned agent CLI;
-- shows what would change, and rebuilds the image only after the user confirms;
-- disables the agents' own self-update checks inside containers.
+Remaining: verify and add the equivalent opt-outs for Codex, OpenCode and Pi, if they offer any, instead
+of guessing at undocumented variables.

@@ -25,6 +25,8 @@ export interface AosPaths {
   readonly preCommitCache: string;
   /** One file per project that pins the GitHub repository aos may mint tokens for. */
   readonly githubRepos: string;
+  /** User-owned binaries aos manages itself (vendored treehouse), resolved by absolute path. */
+  readonly bin: string;
 }
 
 export interface ProjectLocation {
@@ -60,6 +62,7 @@ export function aosPaths(root: string): AosPaths {
     treehouse: join(root, "state", "treehouse"),
     preCommitCache: join(root, "state", "pre-commit"),
     githubRepos: join(root, "state", "github-repos"),
+    bin: join(root, "bin"),
   };
 }
 

@@ -16,7 +16,9 @@ import { AosError } from "./errors.ts";
 import { githubSetup } from "./github.ts";
 import type { AosPaths } from "./paths.ts";
 import { EMPTY_SECRETS, missingLoginFiles, readSecretsEnv, type SecretsEnv, selectAgentEnv, unroutedKeys } from "./secrets.ts";
-import { treehouseVersion } from "./treehouse.ts";
+import { guardConfigPath, guardFileIntact } from "./guard.ts";
+import { describeTuning, sandboxTuning } from "./hardening.ts";
+import { isSupportedTreehouseVersion, resolveTreehouseCmd, TREEHOUSE_MIN_VERSION, TREEHOUSE_PINNED_VERSION, treehouseLocation, treehouseVersion } from "./treehouse.ts";
 
 type Level = "ok" | "warn" | "fail";
 const MARK: Record<Level, string> = { ok: "✓", warn: "!", fail: "✗" };
@@ -88,12 +90,31 @@ export function runDoctor(paths: AosPaths, options: { readonly clean?: boolean }
     }
   }
 
-  const treehouse = treehouseVersion();
-  report(
-    treehouse ? "ok" : "warn",
-    "treehouse",
-    treehouse ? treehouse : `not found on PATH: install it from https://github.com/kunchenguid/treehouse, or always run "aos <agent> --here"`,
-  );
+  const treehouseCmd = resolveTreehouseCmd();
+  const treehouse = treehouseVersion(treehouseCmd);
+  const source = treehouseLocation(treehouseCmd).source;
+  const where = source === "vendored" ? `${treehouseCmd} (vendored)` : source === "env" ? `${treehouseCmd} (AOS_TREEHOUSE_CMD)` : "on PATH";
+  if (!treehouse) {
+    report("warn", "treehouse", `not found: run "aos treehouse install" to install pinned ${TREEHOUSE_PINNED_VERSION} into ${paths.bin}, or always run "aos <agent> --here"`);
+  } else if (!isSupportedTreehouseVersion(treehouse)) {
+    report("warn", "treehouse", `${treehouse} via ${where}: older than minimum ${TREEHOUSE_MIN_VERSION}; run "aos treehouse install --force"`);
+  } else {
+    report("ok", "treehouse", `${treehouse} via ${where}`);
+  }
+
+  if (guardFileIntact(paths)) {
+    report("ok", "guard", `snippet ready (${guardConfigPath(paths)}); run "aos guard install" inside each project checkout to enable it`);
+  } else {
+    report("warn", "guard", `snippet missing: run "aos init", then "aos guard install" inside each project checkout`);
+  }
+
+  try {
+    const tuned = describeTuning(sandboxTuning());
+    report("ok", "tuning", tuned ?? "defaults (set AOS_NETWORK and/or AOS_CPUS to constrain sessions)");
+  } catch (error) {
+    if (!(error instanceof AosError)) throw error;
+    report("fail", "tuning", error.message);
+  }
 
   for (const spec of AGENT_SPECS) {
     const { name } = spec;

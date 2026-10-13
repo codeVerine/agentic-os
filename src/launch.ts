@@ -9,6 +9,7 @@ import { AosError } from "./errors.ts";
 import { cleanupOnExit } from "./exit.ts";
 import { gitOrEmpty, safeDirectoryEnv } from "./git.ts";
 import { prepareGithubAccess } from "./github.ts";
+import { sandboxTuning } from "./hardening.ts";
 import { hookRunnerProblems } from "./hookrunners.ts";
 import { terminalEnv } from "./hostenv.ts";
 import {
@@ -61,6 +62,13 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   const target = here
     ? { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined, subdir: project.subdir }
     : await resolveWorktreeTarget(spec.name, agentArgs, project, paths, agentDir);
+  if (here) {
+    console.error(
+      `aos: --here runs ${spec.name} in your own checkout with read-write access to your real .git: ` +
+        `an agent's config, hooks, refs or remote changes run on the Mac on your next git command. ` +
+        `Use "aos ${spec.name}" (worktree mode) for anything you would not run on the Mac directly.`,
+    );
+  }
 
   assertProjectEnvNotLinked(target.hostRoot);
 
@@ -121,10 +129,13 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   const preCommitCache = join(paths.preCommitCache, key);
   mkdirSync(preCommitCache, { recursive: true });
 
+  const tuning = sandboxTuning(options.hostEnv);
   const sandbox = docker({
     imageName: IMAGE,
     containerUid: ids.uid,
     containerGid: ids.gid,
+    ...(tuning.network !== undefined ? { network: tuning.network } : {}),
+    ...(tuning.cpus !== undefined ? { cpus: tuning.cpus } : {}),
     mounts: [
       ...(session
         ? sessionGitMounts(commonDir, session, target.hostRoot, sandboxProjectRoot)

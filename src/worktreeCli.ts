@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import { AosError } from "./errors.ts";
 import { deleteBranch, isMergedInto, isWorktreeClean, mainCheckout, mergeLocally } from "./git.ts";
 import { type AosPaths, gitCommonDir, locateProject } from "./paths.ts";
+import { formatLandingReview, landingReview } from "./landing.ts";
 import { projectKey, readRegistry, withRegistryLock, type WorktreeRecord } from "./registry.ts";
 import {
   describeImport,
@@ -149,8 +150,16 @@ async function mergeWorktree(id: string, cwd: string, paths: AosPaths): Promise<
   const found = findRecord(readRegistry(paths, key), id);
   const folderIsOurs = !leaseEnded(found, treehouseStatus(mainRoot, [found.poolRoot]));
   const record = await importPending(paths, key, mainRoot, found, folderIsOurs);
-  mergeLocally(mainRoot, workBranch(record));
-  console.log(`aos: merged ${workBranch(record)} into the branch checked out in ${mainRoot}.`);
+  const branch = workBranch(record);
+  try {
+    const block = formatLandingReview(branch, landingReview(mainRoot, branch));
+    if (block) console.error(block);
+  } catch (error) {
+    // The review is advisory, but a skipped review must be visible, not silent.
+    console.error(`aos: landing review unavailable: ${(error as Error).message}`);
+  }
+  mergeLocally(mainRoot, branch);
+  console.log(`aos: merged ${branch} into the branch checked out in ${mainRoot}.`);
   console.log(`aos: run "aos worktree rm ${record.id}" to release its worktree and delete the branch.`);
   return 0;
 }

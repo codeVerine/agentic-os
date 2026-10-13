@@ -92,7 +92,8 @@ RUN install -d -o "$AGENT_UID" -g "$AGENT_GID" \
 
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
-    PATH=/home/agent/.local/bin:$PATH
+    PATH=/home/agent/.local/bin:$PATH \
+    DISABLE_AUTOUPDATER=1
 
 USER ${AGENT_UID}:${AGENT_GID}
 WORKDIR /home/agent

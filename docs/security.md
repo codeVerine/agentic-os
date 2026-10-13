@@ -138,7 +138,7 @@ an interpreter under a Mac-only path such as `/opt/homebrew`, a `core.hooksPath`
 | # | Channel | Mitigation |
 |---|---|---|
 | 1 | Content you approved and merged | By design |
-| 2 | You run git **inside an agent worktree** on the Mac. Your approved `core.hooksPath=.husky/_` runs the slot's agent-written ignored stub and unreviewed tracked hook files | Review the branch before running git or `npm` inside the folder, or work from the main checkout. The `includeIf "onbranch:aos/**"` guard is designed and deferred |
+| 2 | You run git **inside an agent worktree** on the Mac. Your approved `core.hooksPath=.husky/_` runs the slot's agent-written ignored stub and unreviewed tracked hook files | Run `aos guard install` (pauses hooks/fsmonitor while an `aos/*` branch is checked out), review the branch before running git or `npm` inside the folder, or work from the main checkout |
 | 3 | Programs your approved config binds through the branch's `.gitattributes` (for example git-lfs) run on agent-supplied file content during `aos worktree list`, `rm` and the index refresh | Approved programs only. Review `.gitattributes` changes |
 | 4 | Nested repositories an agent leaves untracked in its folder (`sub/.git` with its own config), for editors that auto-detect them. aos runs git only at the worktree root | Do not open an agent worktree in an editor you have not reviewed |
 | 5 | `index-pack` and fsck parse agent-supplied pack data during import | Same exposure as fetching from any remote; objects are checked |
@@ -149,15 +149,11 @@ an interpreter under a Mac-only path such as `/opt/homebrew`, a `core.hooksPath`
 
 These were designed and are not built. They are listed so the docs state what is and is not covered.
 
-- **Grouped landing review.** At `aos worktree merge`, one concise review of everything on the branch that will
-  run on the Mac (hook scripts, hook-manager config, the files they name, `.gitattributes`, `package.json`
-  install-time scripts), with approval pinned to the reviewed content. Tracked hook files are covered by your
-  normal diff review until it exists.
-- **`includeIf "onbranch:aos/**"` guard.** One `include` line in a repository's config pointing at an aos-owned
-  file that turns hooks and fsmonitor off while an `aos/*` branch is checked out, which would close row 2 of
-  the table above. It needs a one-time host config change with your consent.
-- **`--here` hook pause.** Not applicable while `--here` is unchanged.
-- **Network egress control.** Containers use Docker's default bridge network.
+- **`--here` hook pause.** `--here` now warns on every launch that it runs unprotected; pausing its hooks is not applicable while `--here` itself is unchanged.
+- **Network egress control.** Containers use Docker's default bridge network unless `AOS_NETWORK` points them at your own networks; per-session networks and fresh per-session clones are not built.
+
+Built since: the grouped landing review (printed by `aos worktree merge`, see `src/landing.ts`)
+and the `includeIf "onbranch:aos/**"` guard (`aos guard install`, see `src/guard.ts`).
 
 ## `--here` is unprotected
 

@@ -41,9 +41,11 @@ repository directly, the way earlier versions of `aos` always did. See "Worktree
 
 - macOS with Docker Desktop running. Linux with Docker should work too but is untested.
 - Node.js 24 or newer.
-- The [treehouse](https://github.com/kunchenguid/treehouse) CLI on `PATH`, for `aos <agent>`'s worktrees.
-  Not needed for `aos <agent> --here`. `aos doctor` and every worktree-leasing launch point at this URL and
-  at `--here` if `treehouse` is missing.
+- The [treehouse](https://github.com/kunchenguid/treehouse) CLI for `aos <agent>`'s worktrees.
+  `aos treehouse install` puts the pinned release in `~/AgenticOS/bin/` (no sudo); a `treehouse`
+  already on `PATH`, or `AOS_TREEHOUSE_CMD`, is used instead when the vendored one is absent.
+  Not needed for `aos <agent> --here`. `aos doctor` and every worktree-leasing launch point at
+  `aos treehouse install` and at `--here` if `treehouse` is missing.
 
 ## Install and first run
 
@@ -54,6 +56,7 @@ npm install            # also compiles TypeScript to dist/
 npm link               # puts `aos` on your PATH
 
 aos init               # creates ~/AgenticOS/{secrets,projects}; secrets/ is mode 0700
+aos treehouse install  # installs the pinned treehouse CLI into ~/AgenticOS/bin (no sudo)
 aos image build        # builds aos-dev:local with your Mac UID/GID (a few minutes the first time)
 aos doctor             # checks Docker, the image, each agent's login and keys, and leftover containers
 
@@ -105,9 +108,13 @@ aos opencode --help
 | Command | What it does |
 | --- | --- |
 | `aos init` | Creates `AOS_ROOT` with an optional `projects/`, `secrets/` (0700), `secrets/env` (0600) and one login directory per agent. Safe to re-run; it resets the secrets permissions. |
-| `aos doctor [--clean]` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, whether GitHub access is configured and its key is usable, that `treehouse` is on `PATH`, and which agents have a saved login or keys. It also reports stopped `aos-dev` containers left behind by sessions that could not clean up after themselves (for example after a `SIGKILL`, or a Docker restart, which shows as `Exited (255)`), and `aos doctor --clean` removes them. It only touches stopped containers named `sandcastle-*` that were started from `aos-dev:local`, never a running session. |
+| `aos doctor [--clean]` | Checks that Docker is reachable (including Docker Desktop's `~/.docker/run/docker.sock`), that `aos-dev:local` exists, matches your UID/GID and was built from this version of `docker/`, that `secrets/env` parses, whether GitHub access is configured and its key is usable, that `treehouse` is available (vendored `AOS_ROOT/bin/`, `AOS_TREEHOUSE_CMD` or `PATH`) and meets the minimum version, and which agents have a saved login or keys. It also reports stopped `aos-dev` containers left behind by sessions that could not clean up after themselves (for example after a `SIGKILL`, or a Docker restart, which shows as `Exited (255)`), and `aos doctor --clean` removes them. It only touches stopped containers named `sandcastle-*` that were started from `aos-dev:local`, never a running session. |
 | `aos image build [docker build args]` | Builds `aos-dev:local` from `docker/Dockerfile` with `AGENT_UID`/`AGENT_GID` set to your Mac user, and labels it with a hash of `docker/`. Launches, logins and `aos doctor` refuse an image whose label does not match the installed aos, so rebuild after upgrading aos. |
+| `aos treehouse install [--force] [--version=X]` | Downloads the pinned treehouse release into `AOS_ROOT/bin/` (no sudo) and verifies it runs. Skipped when a working binary is already there unless `--force`. |
+| `aos image update [--check] [--yes]` | Checks the pinned agent CLIs against npm, shows what would change, and rebuilds the image after confirmation (`--check` only reports). |
+| `aos guard <install\|remove\|status>` | Pauses hooks and fsmonitor on the Mac while an `aos/*` branch is checked out, via one `includeIf` line at the end of that repo's own config. Run inside each project checkout; `status` reports the state. |
 | `aos github setup [--force]` | Creates the GitHub App that gives agents pull, push and PR access, through GitHub's App manifest flow with one confirmation click in the browser. Saves its key to `secrets/github-app.pem` (0600), sets `AOS_GITHUB_APP_ID` and `AOS_GITHUB_APP_KEY_FILE` in `secrets/env`, and checks the install. See "GitHub access". |
+| `aos github ruleset <owner/repo> [--dry-run]` | Creates the `aos` branch ruleset on that repository (all branches: block deletions and force pushes), with your own `gh` auth. The App's token cannot do this itself. |
 | `aos secrets login <agent> [args]` | Runs the agent's own login flow in a throwaway `aos-dev` container that mounts only that agent's login directory. Extra arguments go to the agent's login command. |
 | `aos claude` / `aos codex` / `aos opencode` / `aos pi` `[args]` | Leases a fresh worktree from the project's treehouse pool and opens the agent's interactive interface in it. See "Worktrees". |
 | `aos claude --here` / etc. `[args]` | Opens the agent's interactive interface in the current directory, no worktree. |
@@ -142,9 +149,11 @@ own branch and its own files, without waiting on each other or on git status in 
 - **The lease stays held.** Unlike a plain `treehouse get`, `aos` never returns the lease when the agent's
   session ends: the worktree and its branch are kept until you explicitly run `aos worktree rm` (or
   `prune`), so treehouse's own prune and destroy leave it alone in the meantime. Landing the work: run
-  `aos worktree merge <id>` to merge it into the branch checked out in your main checkout, then
-  `aos worktree rm <id>` to release the lease and delete the now-merged branch. `aos worktree prune` does
-  both steps for every worktree that already qualifies.
+   `aos worktree merge <id>` to merge it into the branch checked out in your main checkout, then
+   `aos worktree rm <id>` to release the lease and delete the now-merged branch. Merge prints a grouped
+   landing review first: every changed file that will run on the Mac (hook scripts, hook-manager config,
+   `.gitattributes`, `package.json` scripts). `aos worktree prune` does
+   both steps for every worktree that already qualifies.
 - **Resume and continue land you back in the right worktree, automatically.** Claude's `-r`/`--resume`/`-c`/
   `--continue`, Codex's `resume` subcommand, OpenCode's `-c`/`--session`, and Pi's `-c`/`-r`/`--session[-id]`
   all scope their own session lookup to the directory the agent is running in, so `aos` detects those flags
@@ -431,13 +440,14 @@ What is **not** closed:
 
 - **Tracked hook files are part of your diff.** `.husky/*`, `.githooks/*`, `lefthook.yml`,
   `.pre-commit-config.yaml`, scripts they call and `package.json` install scripts run on the Mac after you merge
-  or run git inside the worktree. Review the branch before merging. A grouped landing review is designed
-  but not built.
+  or run git inside the worktree. `aos worktree merge` prints a grouped landing review of exactly these files;
+  review it (and the diff) before pushing or installing.
 - **Running git or `npm` inside an agent worktree folder on the Mac** uses your approved hooks on agent-written
-  files. The `includeIf "onbranch:aos/**"` guard that would turn that off is designed but not built. Merge
+  files. `aos guard install` pauses hooks and fsmonitor while an `aos/*` branch is checked out. Merge
   from the main checkout instead.
 - **`--here` is unprotected.** It runs in your own checkout with read-write access to your real `.git`, so
-  every channel above applies, including the config, hooks and refs. Use worktree mode for untrusted agents.
+  every channel above applies, including the config, hooks and refs. Every `--here` launch warns as much.
+  Use worktree mode for untrusted agents.
 - Docker's default network, secrets in the container environment and the other items under "Deliberately
   skipped for now".
 
@@ -451,13 +461,15 @@ Planned work that is understood but not built yet is listed in [TODO.md](TODO.md
 This is the MVP's first slice. It skips, on purpose:
 
 - Headless sessions driven from chat (`start`, `send`, `stop`, `status`, `logs`), a runner, and a queue.
-- Repository creation, and GitHub rulesets: `aos` gives agents a per-repository GitHub App token (see "GitHub
-  access") but does not set up server-side rules. Without the App configured, containers get no GitHub
-  credentials and `gh` in the image is unauthenticated.
+- Repository creation. GitHub rulesets are partially covered: `aos github ruleset <owner/repo>` blocks
+  force pushes and branch deletion with your own `gh` auth (the App's token cannot do that itself).
+  Without the App configured, containers get no GitHub credentials and `gh` in the image is unauthenticated.
 - Host metrics, ZeroClaw, Telegram and notifications.
-- Deeper isolation and hardening: dropped capabilities, read-only root filesystem, resource limits, egress
-  filtering, per-session networks and fresh per-session clones. Containers use Docker's default bridge
-  network, which on Docker Desktop can reach services on the Mac's localhost.
+- Deeper isolation and hardening: dropped capabilities, read-only root filesystem, egress filtering and
+  fresh per-session clones. Two opt-ins exist today: `AOS_NETWORK` (one network, or several
+  comma-separated) attaches sessions to your own networks instead of Docker's default bridge, which on
+  Docker Desktop can reach services on the Mac's localhost; `AOS_CPUS` caps session CPUs
+  (`aos doctor` shows both). `aos image update` keeps the pinned agent CLIs current.
 - Keeping secrets out of process arguments: Sandcastle passes a launch's selected keys to `docker run -e`,
   so they are visible to local users in the process list and in `docker inspect` while the container runs.
 - Multi-arch image publishing and CI; the image is built locally.

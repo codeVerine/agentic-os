@@ -11,6 +11,8 @@ const KEPT_HOST_VARS = new Set([
   "SHELL",
   "TMPDIR",
   "USER",
+  "AOS_NETWORK",
+  "AOS_CPUS",
   "DOCKER_CERT_PATH",
   "DOCKER_CONFIG",
   "DOCKER_CONTEXT",
