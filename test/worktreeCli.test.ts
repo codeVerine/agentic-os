@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -8,7 +8,7 @@ import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { aosPaths, locateProject } from "../src/paths.ts";
 import type { WorktreeRecord } from "../src/registry.ts";
-import { initCommittedRepo } from "./helpers.ts";
+import { initCommittedRepo, writeFakeDocker } from "./helpers.ts";
 
 // A fake treehouse binary lets these tests exercise the lease and return paths without the real CLI
 // installed. It logs every call, leases whatever path AOS_FAKE_LEASE_PATH names, reports
@@ -54,6 +54,7 @@ exit 0
 );
 chmodSync(fakeTreehouse, 0o755);
 process.env.AOS_TREEHOUSE_CMD = fakeTreehouse;
+process.env.AOS_DOCKER_CMD = writeFakeDocker(base).cmd;
 const hostTreehouseRoot = join(base, "custom-pool");
 process.env.TREEHOUSE_ROOT = hostTreehouseRoot;
 
@@ -324,7 +325,7 @@ describe("aos worktree rm/prune with a still-running agent", () => {
 });
 
 describe("a worktree whose treehouse lease ended outside aos", () => {
-  const returnCalls = (): number => treehouseCalls().filter((call) => call.startsWith("return")).length;
+  const returnCalls = (): number => treehouseCalls().filter((call) => /^(--root \S+ )?return /.test(call)).length;
   const leasedTo = (record: WorktreeRecord, leaseId: string): string =>
     JSON.stringify([{ name: record.id, path: record.worktreePath, status: "leased", lease_id: leaseId, lease_holder: "aos-999999999" }]);
   after(() => {
@@ -425,7 +426,8 @@ describe("resolveWorktreeTarget", () => {
 
     await assert.rejects(resolveWorktreeTarget("claude", [], locateProject(r.main), r.paths, join(base, "lease-leak-agent")));
 
-    assert.ok(treehouseCalls().includes(`return ${leased} --force --if-lease-id fake-lease`));
+    assert.ok(treehouseCalls().includes(`--root ${r.paths.treehouse} return ${leased} --force --if-lease-id fake-lease`));
+    assert.equal(existsSync(join(r.paths.gitdirs, r.key)) ? readdirSync(join(r.paths.gitdirs, r.key)).length : 0, 0);
     const branches = execFileSync("git", ["-C", r.main, "branch", "--list", "aos/*"], { encoding: "utf8" });
     assert.equal(branches.trim(), "");
   });
@@ -437,12 +439,104 @@ describe("resolveWorktreeTarget", () => {
     const sessionDir = join(agentDir, "projects", `-home-agent-projects-${project.sandboxName}`);
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(join(sessionDir, "session-main.jsonl"), "{}\n");
-    const leasesBefore = treehouseCalls().filter((call) => call.startsWith("get")).length;
+    const leaseCalls = (): number => treehouseCalls().filter((call) => /^(--root \S+ )?get /.test(call)).length;
+    const leasesBefore = leaseCalls();
 
     const target = await resolveWorktreeTarget("claude", ["--resume", "session-main"], project, r.paths, agentDir);
 
     assert.deepEqual(target, { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined, subdir: "" });
-    assert.equal(treehouseCalls().filter((call) => call.startsWith("get")).length, leasesBefore);
+    assert.equal(leaseCalls(), leasesBefore);
+  });
+});
+
+const gitIn = (dir: string, ...args: string[]): string => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
+
+/** Leases a worktree through resolveWorktreeTarget, so it has the pool root and private git directory a launch gives it. */
+async function leaseSession(name: string) {
+  const r = repo(name);
+  const slot = join(base, `${name}-slot`);
+  execFileSync("git", ["-C", r.main, "worktree", "add", "--quiet", "--detach", slot]);
+  process.env.AOS_FAKE_LEASE_PATH = slot;
+  const target = await resolveWorktreeTarget("claude", [], locateProject(r.main), r.paths, join(base, `${name}-agent`));
+  await withRegistryLock(r.paths, r.key, (records) => ({ records: records.map((rec) => ({ ...rec, activePid: undefined })), value: undefined }));
+  const record = readRegistry(r.paths, r.key)[0] as WorktreeRecord;
+  const session = target.session;
+  assert.ok(session);
+  return { r, slot, target, record, session };
+}
+
+function agentCommit(slot: string, gitDir: string, file: string): void {
+  writeFileSync(join(slot, file), "agent change\n");
+  const common = ["--git-dir", gitDir, "--work-tree", slot];
+  execFileSync("git", [...common, "add", file]);
+  execFileSync("git", ["-c", "user.name=Agent", "-c", "user.email=a@example.com", ...common, "commit", "--quiet", "-m", "agent change"]);
+}
+
+describe("worktree sessions with a private git directory", () => {
+  test("a new lease comes from aos's own pool and the session gets a git directory beside the approved .git", async () => {
+    const { r, slot, target, record, session } = await leaseSession("session-new");
+
+    assert.ok(treehouseCalls().some((call) => call.startsWith(`--root ${r.paths.treehouse} get --lease`)));
+    assert.equal(record.poolRoot, r.paths.treehouse);
+    assert.equal(record.importedTip, gitIn(r.main, "rev-parse", "HEAD"));
+    assert.equal(session.gitDir, join(r.paths.gitdirs, r.key, `${record.id}.git`));
+    assert.ok(existsSync(session.gitDir));
+    assert.equal(target.branch, record.branch);
+    assert.match(readFileSync(join(slot, ".git"), "utf8"), /gitdir: .*\/worktrees\//);
+    assert.equal(gitIn(slot, "symbolic-ref", "--short", "HEAD"), record.branch);
+  });
+
+  test("a record made before private git directories gets one from its branch tip when it is resumed", async () => {
+    const r = repo("session-migrate");
+    const record = branchWorktree(r, "migrate-1");
+    await seed(r, record);
+    process.env.AOS_FAKE_STATUS = JSON.stringify([
+      { name: record.id, path: record.worktreePath, status: "leased", lease_id: "fake-lease", lease_holder: "aos-999999999" },
+    ]);
+    try {
+      const target = await resolveWorktreeTarget("claude", ["--continue"], locateProject(r.main), r.paths, join(base, "session-migrate-agent"));
+
+      assert.equal(target.hostRoot, record.worktreePath);
+      assert.ok(target.session && existsSync(target.session.gitDir));
+      assert.equal(readRegistry(r.paths, r.key)[0]?.importedTip, gitIn(r.main, "rev-parse", `refs/heads/${record.branch}`));
+      assert.equal(execFileSync("git", ["--git-dir", target.session.gitDir, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" }).trim(), record.branch);
+    } finally {
+      delete process.env.AOS_FAKE_STATUS;
+    }
+  });
+
+  test("merge imports what the session committed before merging, and rm then removes the git directory", async () => {
+    const { r, slot, record, session } = await leaseSession("session-merge");
+    agentCommit(slot, session.gitDir, "agent.txt");
+    assert.equal(gitIn(r.main, "rev-parse", `refs/heads/${record.branch}`), record.importedTip);
+
+    assert.equal(await worktreeCommand(["merge", record.id], r.main, r.paths), 0);
+
+    assert.ok(gitIn(r.main, "log", "--oneline").includes("agent change"));
+    assert.equal(readRegistry(r.paths, r.key)[0]?.importedTip, gitIn(r.main, "rev-parse", `refs/heads/${record.branch}`));
+    assert.equal(await worktreeCommand(["rm", record.id], r.main, r.paths), 0);
+    assert.equal(existsSync(session.gitDir), false);
+    assert.equal(readRegistry(r.paths, r.key).length, 0);
+    assert.ok(treehouseCalls().some((call) => call.startsWith(`--root ${r.paths.treehouse} return`)));
+  });
+
+  test("rm imports first, so commits the session has not handed over yet count as unmerged", async () => {
+    const { r, slot, record, session } = await leaseSession("session-rm-unmerged");
+    agentCommit(slot, session.gitDir, "agent.txt");
+
+    await assert.rejects(worktreeCommand(["rm", record.id], r.main, r.paths), /is not merged/);
+    assert.ok(existsSync(session.gitDir));
+    assert.notEqual(gitIn(r.main, "rev-parse", `refs/heads/${record.branch}`), record.importedTip);
+  });
+
+  test("list marks a session whose commits have not been imported and imports them for an idle one", async () => {
+    const { r, slot, record, session } = await leaseSession("session-list");
+    agentCommit(slot, session.gitDir, "agent.txt");
+
+    assert.equal(await worktreeCommand(["list"], r.main, r.paths), 0);
+
+    assert.notEqual(gitIn(r.main, "rev-parse", `refs/heads/${record.branch}`), record.importedTip);
+    assert.equal(readRegistry(r.paths, r.key)[0]?.importedTip, gitIn(r.main, "rev-parse", `refs/heads/${record.branch}`));
   });
 });
 
@@ -559,7 +653,7 @@ describe("leasing a new worktree", () => {
 
     assert.equal(target.subdir, "packages/app");
     assert.equal(readRegistry(r.paths, r.key)[0]?.subdir, "packages/app");
-    const lease = treehouseCalls().slice(before).find((call) => call.startsWith("get "));
+    const lease = treehouseCalls().slice(before).find((call) => /^(--root \S+ )?get /.test(call));
     assert.ok(lease?.split(" ").includes("--no-fetch"), `treehouse get was run as: ${lease}`);
   });
 });

@@ -1,12 +1,20 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentName } from "./agents.ts";
 import { AosError } from "./errors.ts";
-import { checkoutNewBranch, currentBranch, deleteBranch, git } from "./git.ts";
-import { assertGitMetadataMountable, type AosPaths, type ProjectLocation, sandboxName } from "./paths.ts";
+import { checkoutNewBranch, currentBranch, deleteBranch, git, gitOrEmpty } from "./git.ts";
+import { assertGitMetadataMountable, type AosPaths, gitCommonDir, type ProjectLocation, sandboxName } from "./paths.ts";
 import { projectKey, readRegistry, type WorktreeRecord, withRegistryLock } from "./registry.ts";
 import { detectResumeIntent, extractExplicitSessionId, findWorktreeForSession, mostRecentlyUsed } from "./resume.ts";
+import {
+  createSessionGitDir,
+  HOST_REMOTE_NAME,
+  removeSessionGitDir,
+  type SessionGit,
+  sessionGitDirExists,
+  sessionGitPaths,
+} from "./sessiongit.ts";
 import { assertTreehouseInstalled, leaseWorktree, liveHolderPid, returnWorktree, treehouseStatus } from "./treehouse.ts";
 
 export interface WorktreeTarget {
@@ -15,6 +23,8 @@ export interface WorktreeTarget {
   readonly branch: string | undefined;
   /** Directory the agent starts in, relative to `hostRoot`, POSIX separators, "" at the root. */
   readonly subdir: string;
+  /** The worktree session's private git directory; absent when the agent runs in the project's own checkout. */
+  readonly session?: SessionGit;
 }
 
 /**
@@ -61,7 +71,14 @@ export async function resolveWorktreeTarget(
       const claim = await claimWorktree(paths, key, picked.id, project.root);
       if (claim.kind === "claimed") {
         const { record } = claim;
-        return { hostRoot: record.worktreePath, sandboxName: record.sandboxName, branch: record.branch, subdir: record.subdir ?? "" };
+        const session = await ensureSessionGitDir(paths, key, record, project.root);
+        return {
+          hostRoot: record.worktreePath,
+          sandboxName: record.sandboxName,
+          branch: record.branch,
+          subdir: record.subdir ?? "",
+          session,
+        };
       }
       console.error(
         claim.kind === "ended"
@@ -72,15 +89,18 @@ export async function resolveWorktreeTarget(
   }
 
   const holder = `aos-${process.pid}`;
-  const lease = leaseWorktree(project.root, holder);
+  mkdirSync(paths.treehouse, { recursive: true });
+  const lease = leaseWorktree(project.root, holder, paths.treehouse);
   const id = newId();
   const branch = `aos/${agentName}/${id}`;
+  const session = sessionGitPaths(paths, key, id);
   let branchCreated = false;
   try {
     const baseRev = git(project.root, "rev-parse", "HEAD");
     checkoutNewBranch(lease.path, branch, baseRev);
     branchCreated = true;
     assertGitMetadataMountable(lease.path);
+    createSessionGitDir({ mainRoot: project.root, commonDir: gitCommonDir(project.root), worktreePath: lease.path, session, branch, baseRev });
     const record: WorktreeRecord = {
       id,
       agent: agentName,
@@ -88,15 +108,18 @@ export async function resolveWorktreeTarget(
       worktreePath: lease.path,
       sandboxName: sandboxName(project.name, `${key}::${branch}`),
       subdir: project.subdir,
+      poolRoot: paths.treehouse,
+      importedTip: baseRev,
       createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
       leaseId: lease.leaseId,
       activePid: process.pid,
     };
     await withRegistryLock(paths, key, (records) => ({ records: [...records, record], value: undefined }));
-    return { hostRoot: record.worktreePath, sandboxName: record.sandboxName, branch: record.branch, subdir: project.subdir };
+    return { hostRoot: record.worktreePath, sandboxName: record.sandboxName, branch: record.branch, subdir: project.subdir, session };
   } catch (error) {
-    releaseUnregisteredLease(project.root, lease, branchCreated ? branch : undefined);
+    removeSessionGitDir(session);
+    releaseUnregisteredLease(project.root, lease, paths.treehouse, branchCreated ? branch : undefined);
     throw error;
   }
 }
@@ -114,7 +137,7 @@ async function claimWorktree(paths: AosPaths, key: string, id: string, projectRo
   return withRegistryLock(paths, key, (records): { records: WorktreeRecord[]; value: Claim } => {
     const record = records.find((r) => r.id === id);
     if (!record || !existsSync(record.worktreePath)) return { records, value: { kind: "gone" } };
-    const status = treehouseStatus(projectRoot);
+    const status = treehouseStatus(projectRoot, [record.poolRoot]);
     const pid = liveHolderPid(record, status);
     if (pid !== undefined) {
       throw new AosError(
@@ -149,9 +172,39 @@ export function containerWorkdir(sandboxProjectRoot: string, hostRoot: string, s
   return sandboxProjectRoot;
 }
 
+/**
+ * The session's private git directory for a resumed worktree. A record from before private git
+ * directories has none yet, so one is made from the branch's current tip on the Mac, which is also what
+ * the session's imports then continue from.
+ */
+async function ensureSessionGitDir(paths: AosPaths, key: string, record: WorktreeRecord, projectRoot: string): Promise<SessionGit> {
+  const session = sessionGitPaths(paths, key, record.id);
+  if (sessionGitDirExists(session)) {
+    if (!existsSync(session.gitFile)) writeFileSync(session.gitFile, `gitdir: ${session.gitDir}\n`);
+    const target = record.importBranch ?? record.branch;
+    const hostTip = gitOrEmpty(projectRoot, "rev-parse", "--verify", "--quiet", `refs/heads/${target}`);
+    if (record.importedTip !== undefined && hostTip !== "" && hostTip !== record.importedTip) {
+      console.error(
+        `aos: ${target} has commits made on the Mac since the session's last import. They are in the session as ${HOST_REMOTE_NAME}/${target}; session commits that do not include them are imported as ${target}-<n>.`,
+      );
+    }
+    return session;
+  }
+  const commonDir = gitCommonDir(projectRoot);
+  const tip = git(projectRoot, "rev-parse", "--verify", `refs/heads/${record.branch}`);
+  createSessionGitDir({ mainRoot: projectRoot, commonDir, worktreePath: record.worktreePath, session, branch: record.branch, baseRev: tip });
+  await withRegistryLock(paths, key, (records) => {
+    const stored = records.find((r) => r.id === record.id);
+    if (stored) stored.importedTip = tip;
+    return { records, value: undefined };
+  });
+  console.error(`aos: ${record.branch} now runs with a private git directory, started from its current commit ${tip.slice(0, 7)}.`);
+  return session;
+}
+
 /** Undoes a lease whose setup failed before it was registered, so the pool never leaks it. */
-function releaseUnregisteredLease(mainRoot: string, lease: { path: string; leaseId: string }, branch: string | undefined): void {
-  const steps = [() => returnWorktree(lease.path, lease.leaseId)];
+function releaseUnregisteredLease(mainRoot: string, lease: { path: string; leaseId: string }, poolRoot: string, branch: string | undefined): void {
+  const steps = [() => returnWorktree(lease.path, lease.leaseId, poolRoot)];
   if (branch) steps.push(() => deleteBranch(mainRoot, branch, true));
   for (const step of steps) {
     try {

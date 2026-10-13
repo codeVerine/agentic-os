@@ -8,7 +8,9 @@ const TREEHOUSE_CMD = process.env.AOS_TREEHOUSE_CMD ?? "treehouse";
 /**
  * The host's treehouse settings (TREEHOUSE_ROOT and friends), captured when this module loads:
  * cli.ts later strips process.env down to what Sandcastle may see, and without these treehouse
- * would lease from a different pool than the user's own treehouse CLI shows.
+ * would still find the user's own settings. New aos leases pass `--root` explicitly, which overrides
+ * TREEHOUSE_ROOT, so they come from aos's own pool; only worktrees leased before that existed are
+ * still looked up in the user's default pool.
  */
 const TREEHOUSE_HOST_ENV = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => key.startsWith("TREEHOUSE_")),
@@ -32,12 +34,18 @@ export function assertTreehouseInstalled(agentName: string, cmd: string = TREEHO
   );
 }
 
+/** Global treehouse flags that select a pool: `--root` for a dedicated one, nothing for the user's default pool. */
+function poolArgs(root: string | undefined): string[] {
+  return root === undefined ? [] : ["--root", root];
+}
+
 /**
  * Leases a worktree without fetching origin: aos checks its branch out from the local HEAD, so a
- * launch must not depend on the remote being reachable.
+ * launch must not depend on the remote being reachable. The pool is the one under `root`, or the user's
+ * default pool when `root` is undefined.
  */
-export function leaseWorktree(cwd: string, holder: string): { path: string; leaseId: string } {
-  const result = spawnSync(TREEHOUSE_CMD, ["get", "--lease", "--json", "--no-fetch", "--lease-holder", holder], {
+export function leaseWorktree(cwd: string, holder: string, root?: string): { path: string; leaseId: string } {
+  const result = spawnSync(TREEHOUSE_CMD, [...poolArgs(root), "get", "--lease", "--json", "--no-fetch", "--lease-holder", holder], {
     cwd,
     encoding: "utf8",
     env: treehouseEnv(),
@@ -63,8 +71,8 @@ export function leaseWorktree(cwd: string, holder: string): { path: string; leas
  * when `leaseId` is still the lease on that folder: treehouse reuses a folder for later leases, so a
  * lease that ended outside aos must never take back the next session's work.
  */
-export function returnWorktree(worktreePath: string, leaseId: string): void {
-  const result = spawnSync(TREEHOUSE_CMD, ["return", worktreePath, "--force", "--if-lease-id", leaseId], {
+export function returnWorktree(worktreePath: string, leaseId: string, root?: string): void {
+  const result = spawnSync(TREEHOUSE_CMD, [...poolArgs(root), "return", worktreePath, "--force", "--if-lease-id", leaseId], {
     encoding: "utf8",
     env: treehouseEnv(),
   });
@@ -79,15 +87,29 @@ export interface TreehouseStatusEntry {
   readonly lease_holder: string;
 }
 
-/** Live pool status, or undefined when treehouse is not installed or the call fails. */
-export function treehouseStatus(cwd: string): TreehouseStatusEntry[] | undefined {
-  const result = spawnSync(TREEHOUSE_CMD, ["status", "--json"], { cwd, encoding: "utf8", env: treehouseEnv() });
+function poolStatus(cwd: string, root: string | undefined): TreehouseStatusEntry[] | undefined {
+  const result = spawnSync(TREEHOUSE_CMD, [...poolArgs(root), "status", "--json"], { cwd, encoding: "utf8", env: treehouseEnv() });
   if (result.status !== 0) return undefined;
   try {
     return JSON.parse(result.stdout.trim()) as TreehouseStatusEntry[];
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Live status of every pool in `roots` (undefined is the user's default pool), concatenated, or
+ * undefined when treehouse is not installed or any one call fails: a pool aos could not read must not
+ * look like one whose leases ended.
+ */
+export function treehouseStatus(cwd: string, roots: readonly (string | undefined)[] = [undefined]): TreehouseStatusEntry[] | undefined {
+  const all: TreehouseStatusEntry[] = [];
+  for (const root of new Set(roots)) {
+    const status = poolStatus(cwd, root);
+    if (status === undefined) return undefined;
+    all.push(...status);
+  }
+  return all;
 }
 
 /** Treehouse lists the folder under a different lease, so it may now belong to another session. */

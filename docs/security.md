@@ -1,274 +1,201 @@
-# Security: git guard and open git gaps
+# Security: host execution through git
 
-Status: **TODO, not implemented.** This document records what aos protects today, the gaps that remain, and a
-parked design for closing them. Nothing described under "Proposed design" exists in the code yet.
+This document records how a worktree session keeps an agent's git changes from running code on your Mac, what
+that protection does not cover, and what is deliberately left for later. The threat it is about is a **turned
+agent**: one that was prompt-injected through an issue, a web page, a dependency README or tool output, and
+runs with full autonomy inside the container. The container is the boundary. Behind it on your Mac are your SSH
+keys, `~/AgenticOS/secrets` (every agent login and the GitHub App key, which can mint tokens for every
+repository the App is installed on) and your other repositories. A malicious repository you chose to work in is
+out of scope: installing its dependencies is your trust decision, with or without aos.
 
 ## Contents
 
-- [Current protections and their limits](#current-protections-and-their-limits)
-- [Live gap: host git still runs planted drivers](#live-gap-host-git-still-runs-planted-drivers)
-- [Threat inventory](#threat-inventory)
-- [Proposed design: prevent, detect, approve](#proposed-design-prevent-detect-approve)
-- [Open problems: projects that use hook managers](#open-problems-projects-that-use-hook-managers)
-- [Decisions D1 to D5](#decisions-d1-to-d5)
-- [Unverified items and risks](#unverified-items-and-risks)
+- [Summary](#summary)
+- [How a worktree session is isolated](#how-a-worktree-session-is-isolated)
+- [What the container can and cannot write](#what-the-container-can-and-cannot-write)
+- [Hooks and hook managers](#hooks-and-hook-managers)
+- [Other protections](#other-protections)
+- [What still runs on the Mac](#what-still-runs-on-the-mac)
+- [Deferred work](#deferred-work)
+- [`--here` is unprotected](#--here-is-unprotected)
+- [Not supported](#not-supported)
+- [Why not read-only overlays](#why-not-read-only-overlays)
+- [Verification](#verification)
 
-## Current protections and their limits
+## Summary
 
-What an agent container can write today:
+In worktree mode (`aos <agent>`, the default), what an agent writes into git metadata never reaches your
+repository's `.git`:
 
-| Mode | Writable from the container |
-|---|---|
-| Worktree (default `aos <agent>`) | The leased worktree folder, the worktree's own `.git` file at its host path, and the **whole shared git directory** of the main repository at its host path. |
-| `--here` | The whole project folder including the `.git` directory, reachable at three container paths: its host path, `/home/agent/workspace/.git` and `/home/agent/projects/<name>/.git`. |
-
-What aos does about it:
-
-- Every host git call aos makes itself runs through `hookSafeGitEnv` (`src/git.ts`), which sets
-  `core.hooksPath=/dev/null` and `core.fsmonitor=false`. This stops hooks and fsmonitor from running.
-- Nothing else. No container mount is read-only, and aos does not compare the git directory against an
-  approved state at any point.
-
-Limits:
-
-- Your own git commands, editor integrations (VS Code, Cursor and JetBrains run `git status` continuously and
-  can auto-fetch), shell prompts, `gh` and `pre-commit` do not use that protection.
-- The protection does not cover filter drivers, merge drivers or `gpg.program` (next section).
-- Because the git directory is shared, one agent's planted hook also runs inside other agents' containers when
-  they commit, with that container's API keys in its environment.
-
-Safe practice until the guard exists is in the README's ["Security"](../README.md#security) section.
-
-## Live gap: host git still runs planted drivers
-
-**Do not run `aos worktree list` or `aos worktree merge` in a repository you suspect an agent tampered with.
-Inspect `.git/config` and `.git/info/attributes` first.**
-
-`aos worktree` commands run host git, and git has no environment switch that disables every filter or merge
-driver by name. In a lab, an agent container with the worktree mount shape planted a clean/smudge filter and a
-merge driver (both bound to all files through `info/attributes`), a `gpg.program` with `commit.gpgSign=true`,
-a `core.fsmonitor` command and six hook scripts in the shared git directory. Each planted command only
-created a marker file on the host. Then the real aos CLI ran on the host, from the main checkout:
-
-| Host command | Markers created on the Mac |
-|---|---|
-| `aos worktree list` | `FILTER_CLEAN` |
-| `aos worktree merge T1` | `FILTER_CLEAN GPG_PROGRAM MERGE_DRIVER` (the merge then failed with `error: gpg failed to sign the data`) |
-| plain `git status --porcelain` (what a prompt or editor runs) | `FSMONITOR` |
-
-No hook marker fired through aos, so `hookSafeGitEnv` does what it claims. It is just not a complete
-baseline:
-
-- `isWorktreeClean` runs `git status --porcelain` in every worktree (`src/git.ts`), which runs clean
-  filters.
-- `mergeLocally` runs `git merge --no-edit` in the main checkout (`src/git.ts`), which runs merge
-  drivers, filters and commit signing.
-- `checkoutNewBranch` and treehouse's own lease checkout write files, which runs smudge filters. Not
-  lab-tested; same mechanism.
-- `treehouse get` fetches from `origin` in the shared repository first, unless given `--no-fetch`, which
-  `aos` now passes on every lease. Lab-tested with treehouse v2.3.0 and an `ssh://` origin before that
-  change: a `core.sshCommand` planted in the shared `.git/config` ran on the Mac and created its marker.
-  `core.gitProxy` and `core.askPass` go through the same fetch and are not lab-tested. An `aos` launch no
-  longer runs that fetch, but a `treehouse get` run by hand still does.
-
-More `GIT_CONFIG_*` overrides are not a robust fix. The fix in the proposed design is to refuse to run host
-git in a repository whose git configuration is not the approved one.
-
-## Threat inventory
-
-"Shared" means one write from any agent session reaches the main checkout and every other worktree of that
-repository, because they all use the same git common dir. There is no per-worktree hooks directory.
-
-| # | What | Where it lives | Shared across worktrees | What on the Mac runs it |
-|---|---|---|---|---|
-| A | Hook scripts (all hook names) | `<common>/hooks/*` | Yes | `git commit/checkout/merge/push`, `gh`, editors that commit |
-| A2 | Hooks directory moved with `core.hooksPath` | A config key; can point into a working tree (husky uses `.husky/_`) | Key shared; target can be per-worktree files | Same as A |
-| B | Exec-capable repo config keys | `<common>/config` | Yes | See key list below |
-| C | Per-worktree config, enabled by `extensions.worktreeConfig` | `<common>/config.worktree`, `<common>/worktrees/<id>/config.worktree` | Per worktree, but any one container can write all of them | Same as B, in that worktree |
-| D | Attribute bindings that attach a filter, diff or merge driver to files | `<common>/info/attributes` (shared); `.gitattributes` (per branch) | `info/attributes`: yes | `status`, `checkout`, `diff`, `merge`, `add` |
-| E | Redirect files that make host git read a different repository's config | The worktree's `.git` file; `<common>/worktrees/<id>/commondir` and `gitdir`; in `--here` mode the `.git` directory | Own `.git` file: that worktree only. `worktrees/<id>/*` of every worktree is writable from any container | Any git run with its cwd inside that worktree, including `aos worktree list` |
-| E2 | Nested repositories left in the working tree (an untracked `sub/.git`, or a bare-repository-shaped directory) | Working tree files | Per worktree | Any git run with its cwd inside that subdirectory |
-| F | Hook-manager config files read by an already-installed hook shim | Tracked files: `.pre-commit-config.yaml`, `.husky/*`, `lefthook.yml` and variants | Per branch, until merged | Your next `git commit` in that worktree, or in main after `aos worktree merge` |
-| G | Integrity only: moved branches (including `main`), `refs/replace/*`, `info/grafts`, `objects/info/alternates`, main's `HEAD` and `index`, `info/exclude` | `<common>/` | Yes | Nothing runs, but review can be misled |
-
-Exec-capable config keys (categories B and C), grouped by what triggers them:
-
-- Every routine command: `core.fsmonitor`, `core.hooksPath`, `filter.<driver>.clean|smudge|process`.
-- Merge and diff: `merge.<driver>.driver`, `diff.external`, `diff.<driver>.command`,
-  `diff.<driver>.textconv`, `difftool.<tool>.cmd`, `mergetool.<tool>.cmd`, `interactive.diffFilter`.
-- Commits and tags: `gpg.program`, `gpg.<format>.program`, `gpg.ssh.defaultKeyCommand` together with
-  `commit.gpgSign` or `tag.gpgSign`; `trailer.<token>.cmd`.
-- Network (fetch, push, `gh`, editor auto-fetch): `core.sshCommand`, `core.gitProxy`, `core.askPass`,
-  `credential.helper` and `credential.<url>.helper`, `remote.<name>.uploadpack|receivepack|vcs`,
-  `protocol.<name>.allow` and `protocol.allow`, `url.<base>.insteadOf|pushInsteadOf`, and remote URLs
-  themselves (where pushes go).
-- Interactive use: `core.pager`, `pager.<command>`, `core.editor`, `sequence.editor`, `alias.*`,
-  `web.browser`, `browser.<tool>.cmd`, `sendemail.smtpServer`.
-- Submodules: `submodule.<name>.update` (shell form; honored from `.git/config`, not from `.gitmodules`).
-- Indirection: `include.path` and `includeIf.<condition>.path` (the target can be in a working tree),
-  `core.worktree`, `core.attributesFile`.
-
-The global `~/.gitconfig` is not mounted into containers, so it is not reachable.
-
-## Proposed design: prevent, detect, approve
-
-Not implemented. Three parts that complement each other.
-
-### 1. Prevent: read-only overlays in every agent container
-
-Mount the files that make the Mac run programs read-only, at every container path where they are reachable.
-Sandcastle's `MountConfig` supports `readonly: true`, and user mounts are appended after Sandcastle's own.
-Every host path must exist before mounting, so aos must create an empty file first where one is missing.
-
-| Path | Worktree mode | `--here` mode |
+| Channel | Before | Now |
 |---|---|---|
-| `<common>/config` | host path | host path and both `.git/config` aliases |
-| `<common>/hooks/` | host path | same three |
-| `<common>/info/attributes` (create empty if missing) | host path | same three |
-| `<common>/worktrees/`, with the agent's own `worktrees/<id>/` mounted back read-write and its `commondir` and `gitdir` read-only on top | host path | same three |
-| The worktree's `.git` file | host path and both container aliases | not applicable |
+| `.git/config` keys (fsmonitor, filter and merge drivers, `sshCommand`, `uploadpack`, `include.path`) | Writable from the container; ran on your next `git status`, including your editor's | The session has its own config. The repository's is not mounted writable |
+| `.git/hooks/*` | Writable; ran on your next commit | The session has its own hooks directory |
+| `.git/commondir`, `worktrees/<id>/*` | Writable; redirected your main checkout's git to an agent-made directory | Not mounted writable |
+| Branch refs | Writable; moving `feature` to a commit with a changed in-tree hook ran it on your `git checkout feature` | The session has its own refs. The branch comes back by import (below) |
+| Objects | Writable; an agent could delete or corrupt history | Read-only |
+| `remote.origin.url` retarget (token for another repository) | Next launch minted a GitHub token for whatever origin named | Container cannot write the repository's config, and the repository is pinned at first launch |
+| Ignored files in a reused pool slot (`.husky/_` stubs, `node_modules/.bin`) | Carried to whoever leased the slot next, on the Mac | aos has its own treehouse pool, so only agent containers lease those slots |
 
-Lab result for this mount shape:
+What is closed is every channel that **never shows up in a diff**. Files that are tracked in the session
+branch (`.husky/pre-commit`, `.githooks/*`, `lefthook.yml`, `.pre-commit-config.yaml`, `package.json` scripts)
+are part of the branch's normal diff and are covered by your own review before you merge. See [Deferred
+work](#deferred-work) for the grouped review that would make them prominent.
 
-- Still works: `commit`, `switch -c`, `switch`, `branch -D` (prints `could not write config file ... Device or
-  resource busy` but deletes the branch), `stash`, `tag`, `rebase`, `merge`, `worktree list`, `log`, `gc`.
-- Refused: writes into `hooks/`, `info/`, other worktrees' `commondir`, the agent's own `commondir`, the `.git`
-  file at both container paths, and moving `config`.
-- Cost: repo-local `git config` writes fail (`git config user.email` exits 4; `branch -u` and `--track` print
-  an error and skip tracking). Sandcastle writes identity to the container's global config, which stays
-  writable, so commits still have an author.
-- `<common>/config.worktree` stays creatable but is inert, because enabling it needs
-  `extensions.worktreeConfig` in the read-only `config`.
-- Mounting all of `worktrees/` read-only also covers worktrees leased after the container started. Its cost is
-  that an explicit `git gc` fails in the agent.
-
-### 2. Detect and quarantine
-
-Keep one approved baseline per repository in aos state, outside every container mount (not under
-`state/run`). Each item records path, file mode and sha256; config items are compared as key/value sets.
-
-Tracked set:
-
-- Every file in `<common>/hooks/` except `*.sample`, and every file in the `core.hooksPath` directory when
-  set.
-- Config: `<common>/config`, `<common>/config.worktree`, every `<common>/worktrees/<id>/config.worktree` and
-  every file named by `include.path` or `includeIf.*.path`. Parse with
-  `git config --file <path> --list --no-includes` (parsing never runs anything) and follow includes in the
-  guard.
-- Allowlist, not denylist: flag every key change except a short benign list (`branch.<name>.remote|merge|
-  rebase|description`, `core.repositoryformatversion|filemode|logallrefupdates|ignorecase|precomposeunicode|
-  symlinks`, `user.name|email`, `remote.<name>.fetch`). A key git adds in a future version is flagged by
-  default.
-- `<common>/info/attributes` and `<common>/info/exclude`.
-- Redirect files: each registered worktree's `.git` file and every `<common>/worktrees/<id>/commondir` and
-  `gitdir`.
-- Cheap integrity markers: `refs/replace/` non-empty, `info/grafts`, `objects/info/alternates`.
-
-When the guard runs:
-
-| Moment | On an unapproved difference |
-|---|---|
-| First use of a repository | No baseline yet. If nothing exec-capable exists, record it silently. Otherwise show what exists and ask once. Repositories used in `--here` mode have been agent-writable, so this doubles as an audit. |
-| Launch, before the lease or any host git beyond discovery | No agent can have written the protected set, so a difference is your own change. On a TTY ask "adopt as approved?". Otherwise refuse to launch. |
-| Session end (the existing cleanup that also runs on SIGHUP, SIGINT and SIGTERM) | Quarantine: move each changed hook and attributes file to the guard state directory, restore the approved copy, undo each flagged config key with `git config --file`. Print a short report. |
-| Before every `aos worktree` subcommand | Refuse with "run `aos guard review`" while any unapproved change is live. Quarantined items do not block. |
-| `aos worktree merge <id>` | List changed hook-manager files in the branch diff (`.pre-commit-config.yaml`, `.husky/`, `lefthook*.yml`, `.gitattributes`, `.gitmodules`, `.lfsconfig`, anything under an in-tree `core.hooksPath`) and require `--approve-hooks` or a TTY yes. Scan the branch for nested `.git` entries. |
-| `aos doctor` | Show the guard state of the current repository. |
-
-This gate before host git is what closes the live gap above.
-
-### 3. Approve by hand
+## How a worktree session is isolated
 
 ```
-aos guard status            Guard state for this repository: clean, live unapproved changes, or quarantined items
-aos guard review [<n>]      Show each change: full new content of hooks and attributes (control characters
-                            escaped), config key/value before and after, redirect file before and after
-aos guard approve <n>|--all Restore the quarantined item (or keep the live one), record it in the baseline and log
-aos guard reject <n>|--all  Delete the quarantined item (or undo the live one) and keep the baseline as is
+Mac                                                  Container (aos session)
+---                                                  -----------------------
+<repo>/.git            approved config/hooks/refs    mounted read-only at /mnt/aos-host-git (the `host` remote)
+<repo>/.git/objects    <------ read-only ---------   mounted read-only at its host path (alternates target)
+<slot>/                treehouse worktree folder     /home/agent/projects/<name>          read-write
+<slot>/.git (file)     gitdir: <repo>/.git/...       /home/agent/projects/<name>/.git     read-only file:
+                                                         "gitdir: <session git dir>"
+~/AgenticOS/state/gitdirs/<project>/<id>.git         the session git dir, read-write: its own config,
+                                                     hooks, info, refs and index; objects/info/alternates
+                                                     names the repository's objects
+<per-launch empty repo>                              /home/agent/workspace (Sandcastle's own mount)
 ```
 
-Approval is recorded in `baseline.json` (approved items with mode and sha256, plus copies of approved hook
-and attributes files so quarantine can restore them) and an append-only `approvals.log` (time, item, old and
-new hash), under a state directory that is never mounted into a container.
+- **The folder stays where treehouse put it, in aos's own pool.** On the Mac its `.git` file still points at
+  your repository, so your git, your editor and treehouse see the approved setup and nothing else.
+- **The session git directory is made by the host, before any container sees it.** It starts as a copy of your
+  approved config, the non-sample files of `hooks/` and `info/`, remote-tracking refs and tags. The session
+  branch starts at the commit aos created it from, and the index is `read-tree HEAD` (no filters run).
+- **Sandcastle is given an empty per-launch repository as its working directory.** Sandcastle mounts its `cwd`
+  and that directory's `.git` read-write and runs its own host git there, so it must never be a project's
+  checkout. aos mounts the project folder and the session git dir itself.
+- **The branch comes back by import.** About a second after each agent commit, and again when the session
+  ends, a throwaway container with no network and the session git dir mounted read-only writes a git bundle.
+  The host fetches the bundle with `transfer.fsckObjects=true` and moves the session branch. Host git never
+  opens the agent-written session git dir, so a config or hook planted there has nothing to run on.
+  If the import cannot run (Docker is down, the machine slept), the commits stay in the session git dir
+  and `aos worktree list`, `merge` and `rm` import them.
+- **Ownership rule.** The repository's branch is replaced only while it is still at the tip imported last,
+  so a rewritten session history imports, and commits you made on the branch from the Mac are never
+  discarded. When you moved the branch and the session no longer contains your commits, the session goes to
+  `<branch>-<n>` with a message, and later imports of that session continue on that branch.
+- **Pull, push and your own local work.** The session's `origin` is your approved `origin` URL, so `git
+  fetch`, `pull`, `push` and `gh` behave as before and use the GitHub App token. Your local branches are
+  visible as `host/<branch>`: aos runs `git fetch host` once at session start, and the agent can run it again.
+  The `host` mount is read-only and cannot carry writes back.
+- **Migration.** A worktree created before this change gets a session git dir the next time it is resumed,
+  made from the branch's current commit.
 
-### What stays uncovered
+## What the container can and cannot write
 
-- Integrity of refs and objects (G): an agent can still move `main` or rewrite history in the shared object
-  store. A per-session clone instead of a shared worktree is the root fix, if that ever matters.
-- Tracked file content in general (scripts, `package.json`, `.envrc`): the same review as any pull request.
-- Committing on the Mac inside an agent worktree before merging runs that branch's hook-manager config. The
-  session-end report should list changed hook-manager files so this is visible.
-- Libgit2-based git clients ignore git's own config, so none of this affects them, in either direction.
-
-### Alternatives considered
-
-| Mechanism | Why not alone |
+| Path | Worktree session |
 |---|---|
-| Snapshot at launch, compare at session end | Misses the in-session window: a planted hook is live on the Mac for the whole session. A per-session snapshot also absorbs another session's unapproved change, because all worktrees share one git dir. Skipped by SIGKILL or power loss. |
-| Same plus a live `fs.watch` | Shrinks the window to about a second (host FSEvents fire for container writes through a Docker Desktop bind mount), but a race remains and the TUI owns the terminal, so aos cannot tell you mid-session. |
-| Host `git` wrapper on PATH | Covers terminal git, `gh` and `pre-commit`, but misses GUI apps, IDEs with an explicit git path and absolute `/usr/bin/git`. A bug blocks all git on the Mac. |
-| macOS `chflags uchg` during sessions | Blocks your own `git config` writes too, and flags survive a crash. |
-| Per-session clone | Root fix, removes the shared git dir. Not chosen; aos uses worktrees. |
+| The leased worktree folder | read-write |
+| The worktree's `.git` file | read-only (shadowed by aos's gitfile) |
+| The session git dir | read-write |
+| The repository's `.git` (config, hooks, refs, `commondir`, `worktrees/`) | not writable: mounted read-only at `/mnt/aos-host-git`, not mounted at its host path |
+| The repository's object stores (including chained alternates) | read-only at their host paths |
+| aos state, secrets of other agents, `~/AgenticOS/state/*` | not mounted |
 
-### Build order
+## Hooks and hook managers
 
-Each step ships on its own and adds protection.
+Hooks and hook configuration stay writable and session-local, and the repository's own hooks run in the
+container for the agent's commits, so failures stay visible.
 
-1. Read-only overlays at launch (a pure function returning the mount list for all aliases). Closes the
-   in-session window and cross-container spread.
-2. Guard core: `snapshot` and `compare` as pure functions over fs reads and `git config --file --list
-   --no-includes`.
-3. Baseline store and `aos guard status|review|approve|reject`.
-4. Gate: verify at launch and at the top of every `aos worktree` subcommand. Closes the live gap.
-5. Session-end check and quarantine, synchronous because it also runs from the exit handler.
-6. Merge gate for hook-manager files and nested repositories, plus `aos doctor` reporting.
-7. README: replace the warning with the guard's guarantees and limits.
+| Situation | Behavior |
+|---|---|
+| Existing, unchanged hooks | Copied into the session; work with no prompt |
+| Husky (`npm install` runs `prepare`) | Writes `core.hooksPath` and its stubs into the session; the Mac's config is untouched |
+| pre-commit | `pre-commit` is in the aos image, with a per-project cache mounted at `~/.cache/pre-commit`. `pre-commit install` writes the session's hooks; a Mac-style shim in the copied hooks also works, because it falls back to `pre-commit` on `PATH` |
+| Lefthook | `lefthook install` writes the session's hooks; the runner comes from `node_modules` |
+| Custom `core.hooksPath` | The approved value is in the session's config, so it works |
+| Custom copy-installers | Use `git rev-parse --git-path hooks` and install into the session. A script that writes the literal path `.git/hooks/...` fails, as in any linked worktree |
+| Agent edits hooks or related scripts | Normal branch diff; nothing is discarded and nothing prompts |
+| Missing runner | One line at launch says what is missing and the setup action (see below) |
 
-## Open problems: projects that use hook managers
+At launch aos reads the hooks it copied and the in-tree `core.hooksPath` directory and prints a line for what
+the container could not run: lefthook without `node_modules`, husky's generated directory before `npm install`,
+an interpreter under a Mac-only path such as `/opt/homebrew`, a `core.hooksPath` outside the project.
 
-Most projects an open-source user works on will have pre-commit hooks, husky or lefthook configured. The
-design above was surveyed against repositories with no hooks at all, so a strict guard costs nothing there but
-has real friction for these projects. None of the following is solved.
+## Other protections
 
-- **Hooks run inside the container.** Commits in the container still run the project's hooks. `pre-commit`
-  needs its runner installed in the image, or every commit in such a project fails.
-- **Husky hooks live in the working tree.** Husky keeps hooks in `.husky/` and points `core.hooksPath` at it.
-  That folder is agent-writable by design, so a read-only `.git` does not protect it, and the hooks then run
-  on the Mac at your next commit there. The guard would need to protect that folder too.
-- **Legitimate edits create approval friction.** Agents legitimately edit `.pre-commit-config.yaml` or
-  `.husky/*`. Asking for approval on every such change is friction in hook-heavy projects.
-- **Husky's install step writes git config.** `npm install` runs husky's `prepare` script, which writes
-  `core.hooksPath`. A read-only `config` would block that write. Whether `npm install` then fails is untested.
+- **Dedicated treehouse pool.** aos leases from `~/AgenticOS/state/treehouse` (`treehouse --root`), not your
+  default pool. `treehouse return` keeps ignored files, so a shared pool carried agent-written ignored files
+  (`.husky/_` stubs) to whoever leased the slot next on the Mac, including other tools. Existing worktrees stay
+  in their old pool until removed: the record remembers its root. A plain `treehouse status` shows only your
+  default pool; `aos worktree list` shows both.
+- **GitHub repository pin.** At a project's first launch aos records which GitHub repository its `origin`
+  names, in `~/AgenticOS/state/github-repos/<project>.json`, and later refuses to give an agent a token when
+  `origin` names a different one. This applies in both modes. If a repository really moved, delete that file
+  and start a new session.
+- **Host git hardening (unchanged).** Every host git call aos makes runs with `core.hooksPath=/dev/null` and
+  `core.fsmonitor=false`.
+- **No fetch on launch.** aos leases with `treehouse get --no-fetch`, so a launch never runs `git fetch origin`
+  with the repository's config (the `core.sshCommand`, `core.gitProxy` and `uploadpack` fetch vectors).
+  A `treehouse get` you run by hand still fetches.
+- **`safe.directory` is exact.** The container's git trusts only the project mount and the session git dir
+  (and, baked into the image, the read-only `/mnt/aos-host-git`), never `*`.
 
-A possible answer: recognize husky, pre-commit and lefthook; protect their real hook folders; and offer a
-strict default mode plus a lighter trust-hook-managers mode, chosen per project.
+## What still runs on the Mac
 
-## Decisions D1 to D5
+| # | Channel | Mitigation |
+|---|---|---|
+| 1 | Content you approved and merged | By design |
+| 2 | You run git **inside an agent worktree** on the Mac. Your approved `core.hooksPath=.husky/_` runs the slot's agent-written ignored stub and unreviewed tracked hook files | Review the branch before running git or `npm` inside the folder, or work from the main checkout. The `includeIf "onbranch:aos/**"` guard is designed and deferred |
+| 3 | Programs your approved config binds through the branch's `.gitattributes` (for example git-lfs) run on agent-supplied file content during `aos worktree list`, `rm` and the index refresh | Approved programs only. Review `.gitattributes` changes |
+| 4 | Nested repositories an agent leaves untracked in its folder (`sub/.git` with its own config), for editors that auto-detect them. aos runs git only at the worktree root | Do not open an agent worktree in an editor you have not reviewed |
+| 5 | `index-pack` and fsck parse agent-supplied pack data during import | Same exposure as fetching from any remote; objects are checked |
+| 6 | The per-launch anchor repository Sandcastle runs host git in is agent-writable for the length of the session | It is an empty throwaway directory, removed at exit; the commands Sandcastle runs there (`rev-parse`, `config`, `rev-list`) execute no repository-controlled programs |
+| 7 | Agent state mounts (`secrets/<agent>`) | Out of scope here; see the file I/O hardening work |
 
-None of these are decided. The recommendation is what the design above assumes.
+## Deferred work
 
-| # | Question | Options | Recommendation |
-|---|---|---|---|
-| D1 | Prevent changes in containers, or only detect them? | (a) Read-only overlays plus detection. (b) Detection only, with a live watch. (c) Detection at session end only. | (a). Only (a) stops a planted hook from running on the Mac or in other agents' containers while a session is open. Cost: agents cannot write repo-local git config. |
-| D2 | What happens to an unapproved change the guard finds? | (a) Quarantine automatically, approve to restore. (b) Leave it, warn and block aos commands. (c) Warn only. | (a). The Mac is safe the moment aos sees the change, and approval is one command. |
-| D3 | Repositories aos already used, which have been agent-writable | (a) First use: record silently when nothing exec-capable exists, otherwise show and ask. (b) Always show and ask. (c) Trust silently. | (a). Asks only when there is something real to look at. |
-| D4 | How wide should the guard look? | (a) Hooks and exec config only (A to E). (b) Also hook-manager files at merge time (F). (c) Also integrity markers (G). | (b) plus the cheap part of (c). F matters as soon as a repository adopts pre-commit or husky; the three G markers cost a `stat` each. |
-| D5 | Install a `git` wrapper on the PATH? | (a) No. (b) Opt-in later. (c) Yes. | (a). With D1(a) nothing reaches the protected files during a session, and a wrapper adds a global failure point while missing GUI tools. |
+These were designed and are not built. They are listed so the docs state what is and is not covered.
 
-The hook-manager problems above add a sixth question that is also open: strict mode only, or strict plus a
-trust-hook-managers mode.
+- **Grouped landing review.** At `aos worktree merge`, one concise review of everything on the branch that will
+  run on the Mac (hook scripts, hook-manager config, the files they name, `.gitattributes`, `package.json`
+  install-time scripts), with approval pinned to the reviewed content. Tracked hook files are covered by your
+  normal diff review until it exists.
+- **`includeIf "onbranch:aos/**"` guard.** One `include` line in a repository's config pointing at an aos-owned
+  file that turns hooks and fsmonitor off while an `aos/*` branch is checked out, which would close row 2 of
+  the table above. It needs a one-time host config change with your consent.
+- **`--here` hook pause.** Not applicable while `--here` is unchanged.
+- **Network egress control.** Containers use Docker's default bridge network.
 
-## Unverified items and risks
+## `--here` is unprotected
 
-- Not lab-tested: smudge filters firing during treehouse's own lease checkout, background auto-gc failing
-  quietly under the read-only `worktrees/` mount, and husky's `prepare` behavior when it cannot set
-  `core.hooksPath` inside a container.
-- A single-file bind mount pins the file the container sees. If git on the Mac rewrites `.git/config` during a
-  session (it writes through a lock file and rename), the container keeps reading the old copy until the next
-  launch. The Mac side is unaffected.
-- Docker orders nested mounts by destination path depth, which the lab relied on. Another container runtime
-  may not.
-- The exec-capable key list is broad but not provably complete; the allowlist approach is what makes an
-  unknown key safe.
-- The survey that suggested low false-positive cost covered a handful of repositories with no hook managers.
-  It says little about projects that use them.
+`--here` is unchanged. The agent runs in your own checkout with read-write access to your real `.git`, so **every
+finding in this document applies to `--here` sessions**: config, hooks, `commondir`, refs and objects are all
+writable from the container, and an agent's change runs on your Mac on your next git command. The repository
+pin (above) is the one protection that applies in both modes.
+
+Use worktree mode for untrusted or free-running agents, and `--here` only when you would be comfortable
+running the agent's output on the Mac directly.
+
+## Not supported
+
+- Committing inside submodules from the container. Submodules work read-only through the repository mount.
+- A main repository using reftable. The image's git cannot read it, and the session's own refs always use files.
+- Writing hooks to the literal path `.git/hooks/...` from a script (see above).
+- A main repository's `extensions.worktreeConfig` / `config.worktree` settings are not carried into the session.
+- Git LFS (not in the image today).
+- If you rewrite history and prune objects a live session still needs, that session breaks; this is rare.
+
+## Why not read-only overlays
+
+An earlier plan mounted `config`, `hooks/`, `info/` and the `.git` file read-only on top of Sandcastle's
+read-write mount of the shared git directory. It does not close host execution:
+
+1. Sandcastle mounts the whole shared git directory read-write at its host path, and a second read-only
+   mount at the same destination does not win: Docker kept the read-write mount in both orders. The root of the
+   git directory stays writable, and git honors a `commondir` file in any git directory. In a lab, with every
+   overlay in place, a container wrote `.git/commondir` pointing at an agent-made directory, and the next plain
+   `git status` in the main checkout ran an agent `core.fsmonitor` on the Mac.
+2. Refs stay shared. A container moved a branch to a commit that changed an in-tree hook, and
+   `git checkout <branch>` on the Mac ran it.
+
+The private session git dir gives the container no writable path into the repository's git directory at all,
+which makes both moot.
+
+## Verification
+
+The manual end-to-end scenarios (the planted-vector checks, the five hook-manager repositories, pull and push,
+resume and history rewrite) and their recorded results are in
+[verification/host-exec.md](verification/host-exec.md).

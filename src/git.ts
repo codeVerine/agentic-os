@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from "node:child_process";
 import { AosError } from "./errors.ts";
 
 /**
@@ -42,6 +42,32 @@ export function spawnGit(
   options: SpawnSyncOptionsWithStringEncoding = { encoding: "utf8" },
 ): SpawnSyncReturns<string> {
   return spawnSync("git", args, { ...options, env: { ...process.env, ...options.env, ...hookSafeGitEnv() } });
+}
+
+export interface GitResult {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/**
+ * `spawnGit` without blocking the event loop, for work that runs while an agent's terminal session is
+ * being relayed by this same process.
+ */
+export function spawnGitAsync(args: readonly string[]): Promise<GitResult> {
+  return new Promise((resolve) => {
+    const child = spawn("git", args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...hookSafeGitEnv() } });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => resolve({ status: null, stdout, stderr: error.message }));
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
 }
 
 /** Trimmed stdout of `git -C dir ...args`, or "" when git fails. */
