@@ -82,23 +82,23 @@ describe("trustCodexProject", () => {
   after(() => rmSync(dir, { recursive: true, force: true }));
   const root = "/home/agent/projects/demo";
 
-  test("writes the entry Codex saves when its trust prompt is accepted", () => {
+  test("writes the entry Codex saves when its trust prompt is accepted", async () => {
     const home = join(dir, "fresh");
     mkdirSync(home);
-    trustCodexProject(home, root);
+    await trustCodexProject(home, root);
     const path = join(home, "config.toml");
     assert.equal(readFileSync(path, "utf8"), `[projects."${root}"]\ntrust_level = "trusted"\n`);
     assert.equal(statSync(path).mode & 0o777, 0o600);
   });
 
-  test("appends after the user's config without touching it, once per project", () => {
+  test("appends after the user's config without touching it, once per project", async () => {
     const home = join(dir, "existing");
     mkdirSync(home);
     const path = join(home, "config.toml");
     writeFileSync(path, 'model = "gpt-6"\n\n[tui]\nnotifications = true');
-    trustCodexProject(home, root);
-    trustCodexProject(home, root);
-    trustCodexProject(home, `${root}-2`);
+    await trustCodexProject(home, root);
+    await trustCodexProject(home, root);
+    await trustCodexProject(home, `${root}-2`);
     assert.equal(
       readFileSync(path, "utf8"),
       [
@@ -117,13 +117,13 @@ describe("trustCodexProject", () => {
     );
   });
 
-  test("leaves a config that already mentions the project alone", () => {
+  test("leaves a config that already mentions the project alone", async () => {
     const home = join(dir, "mentioned");
     mkdirSync(home);
     const path = join(home, "config.toml");
     const content = `[projects."${root}"]\ntrust_level = "untrusted"\n`;
     writeFileSync(path, content);
-    trustCodexProject(home, root);
+    await trustCodexProject(home, root);
     assert.equal(readFileSync(path, "utf8"), content);
   });
 });

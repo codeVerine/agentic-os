@@ -1,7 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AosError } from "./errors.ts";
-import { writePrivateFileAtomic } from "./fsutil.ts";
+import { readTextFileInside, writePrivateFileAtomic } from "./fsutil.ts";
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
 export interface JsonObject {
@@ -43,10 +42,11 @@ export function fillMissing(existing: JsonObject, defaults: JsonObject): { merge
 export function applyDefaults(agentDir: string, defaults: DefaultsFile): void {
   const path = join(agentDir, defaults.file);
   let existing: JsonObject = {};
-  if (existsSync(path)) {
+  const text = readTextFileInside(agentDir, path);
+  if (text !== undefined) {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(readFileSync(path, "utf8"));
+      parsed = JSON.parse(text);
     } catch (error) {
       throw new AosError(`${path} is not valid JSON (${(error as Error).message}). Fix or remove it, then run again.`);
     }
