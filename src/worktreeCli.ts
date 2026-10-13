@@ -81,48 +81,57 @@ function mergeWorktree(id: string, cwd: string, paths: AosPaths): number {
 
 async function removeWorktree(id: string, force: boolean, cwd: string, paths: AosPaths): Promise<number> {
   const { mainRoot, key } = locateMainCheckout(cwd);
-  const record = findRecord(readRegistry(paths, key), id);
-  removeOne(mainRoot, record, force, treehouseStatus(mainRoot));
-  await dropRecords(paths, key, [record.id]);
+  // Under the registry lock, so a resume cannot claim the worktree between the checks and the return.
+  await withRegistryLock(paths, key, (records) => {
+    const record = findRecord(records, id);
+    removeOne(mainRoot, record, force, treehouseStatus(mainRoot));
+    return { records: records.filter((r) => r.id !== record.id), value: undefined };
+  });
   return 0;
 }
 
+type PruneOutcome = "removed" | "kept" | "failed";
+
 async function pruneWorktrees(cwd: string, paths: AosPaths): Promise<number> {
   const { mainRoot, key } = locateMainCheckout(cwd);
-  const records = readRegistry(paths, key);
-  const status = treehouseStatus(mainRoot);
-  const removedIds: string[] = [];
-  let failed = 0;
-  for (const record of records) {
-    if (!existsSync(record.worktreePath)) {
-      console.log(`aos: ${record.id} (${record.branch}) is gone from disk; dropping it from the registry.`);
-      removedIds.push(record.id);
-      continue;
-    }
-    const ended = leaseEnded(record, status);
-    if ((!ended && !isWorktreeClean(record.worktreePath)) || !isMergedInto(mainRoot, record.branch)) continue;
-    const pid = liveHolderPid(record, status);
-    if (pid !== undefined) {
-      console.log(`aos: ${record.id} (${record.branch}) is still in use by running aos process ${pid}; skipping it.`);
-      continue;
-    }
-    try {
-      removeOne(mainRoot, record, false, status);
-      removedIds.push(record.id);
-    } catch (error) {
-      console.error(`aos: could not remove ${record.id}: ${(error as Error).message}`);
-      failed++;
-    }
+  const ids = readRegistry(paths, key).map((r) => r.id);
+  const outcomes: PruneOutcome[] = [];
+  for (const id of ids) {
+    // One lock per worktree, taken fresh, so each is judged on the registry as it is now and a
+    // resume that claimed it since the listing keeps it.
+    outcomes.push(
+      await withRegistryLock(paths, key, (records) => {
+        const record = records.find((r) => r.id === id);
+        const outcome = record ? pruneOne(mainRoot, record) : "kept";
+        return { records: outcome === "removed" ? records.filter((r) => r.id !== id) : records, value: outcome };
+      }),
+    );
   }
-  await dropRecords(paths, key, removedIds);
-  const kept = records.length - removedIds.length;
-  console.log(`aos: removed ${removedIds.length} worktree${removedIds.length === 1 ? "" : "s"}, kept ${kept}.`);
-  return failed === 0 ? 0 : 1;
+  const removed = outcomes.filter((o) => o === "removed").length;
+  console.log(`aos: removed ${removed} worktree${removed === 1 ? "" : "s"}, kept ${ids.length - removed}.`);
+  return outcomes.includes("failed") ? 1 : 0;
 }
 
-async function dropRecords(paths: AosPaths, key: string, ids: readonly string[]): Promise<void> {
-  if (ids.length === 0) return;
-  await withRegistryLock(paths, key, (records) => ({ records: records.filter((r) => !ids.includes(r.id)), value: undefined }));
+function pruneOne(mainRoot: string, record: WorktreeRecord): PruneOutcome {
+  if (!existsSync(record.worktreePath)) {
+    console.log(`aos: ${record.id} (${record.branch}) is gone from disk; dropping it from the registry.`);
+    return "removed";
+  }
+  const status = treehouseStatus(mainRoot);
+  const ended = leaseEnded(record, status);
+  if ((!ended && !isWorktreeClean(record.worktreePath)) || !isMergedInto(mainRoot, record.branch)) return "kept";
+  const pid = liveHolderPid(record, status);
+  if (pid !== undefined) {
+    console.log(`aos: ${record.id} (${record.branch}) is still in use by running aos process ${pid}; skipping it.`);
+    return "kept";
+  }
+  try {
+    removeOne(mainRoot, record, false, status);
+    return "removed";
+  } catch (error) {
+    console.error(`aos: could not remove ${record.id}: ${(error as Error).message}`);
+    return "failed";
+  }
 }
 
 /**
@@ -130,7 +139,7 @@ async function dropRecords(paths: AosPaths, key: string, ids: readonly string[])
  * A lease that already ended outside aos is not returned and its folder is not touched, since treehouse
  * may have handed that folder to another session; only the record's own branch is dropped.
  * Throws only while the lease is still held: once it is returned the caller must drop the record,
- * so a failed branch delete is reported rather than thrown.
+ * so a failed branch delete is reported rather than thrown. Callers hold the registry lock.
  */
 function removeOne(
   mainRoot: string,

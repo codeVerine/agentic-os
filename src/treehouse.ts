@@ -32,8 +32,16 @@ export function assertTreehouseInstalled(agentName: string, cmd: string = TREEHO
   );
 }
 
+/**
+ * Leases a worktree without fetching origin: aos checks its branch out from the local HEAD, so a
+ * launch must not depend on the remote being reachable.
+ */
 export function leaseWorktree(cwd: string, holder: string): { path: string; leaseId: string } {
-  const result = spawnSync(TREEHOUSE_CMD, ["get", "--lease", "--json", "--lease-holder", holder], { cwd, encoding: "utf8", env: treehouseEnv() });
+  const result = spawnSync(TREEHOUSE_CMD, ["get", "--lease", "--json", "--no-fetch", "--lease-holder", holder], {
+    cwd,
+    encoding: "utf8",
+    env: treehouseEnv(),
+  });
   if (result.error) throw new AosError(`treehouse get --lease failed to start: ${result.error.message}`);
   if (result.status !== 0) {
     throw new AosError(`treehouse get --lease failed: ${(result.stderr || result.stdout).trim()}`);

@@ -45,7 +45,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   const secrets = readSecretsEnv(paths.secretsEnv);
 
   const target = here
-    ? { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined }
+    ? { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined, subdir: project.subdir }
     : await resolveWorktreeTarget(spec.name, agentArgs, project, paths, agentDir);
 
   assertProjectEnvNotLinked(target.hostRoot);
@@ -57,7 +57,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   await spec.trustProject?.(agentDir, sandboxProjectRoot);
   const sharedGitDir = sharedGitDirMount(target.hostRoot);
   const safeDirectories = sharedGitDir === undefined ? [sandboxProjectRoot] : [sandboxProjectRoot, sharedGitDir];
-  const workdir = containerWorkdir(sandboxProjectRoot, target.hostRoot, project.subdir);
+  const workdir = containerWorkdir(sandboxProjectRoot, target.hostRoot, target.subdir);
   const setup = spec.launchSetup ? `${spec.launchSetup} && ` : "";
   const argv = ["sh", "-c", `cd "$1" && shift && ${setup}exec "$@"`, "aos", workdir, spec.command, ...agentArgs];
 
