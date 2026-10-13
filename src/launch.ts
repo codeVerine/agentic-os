@@ -105,7 +105,7 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   try {
     const result = await interactive({
       name: `aos ${spec.name} (${project.name}${target.branch ? ` @ ${target.branch}` : ""})`,
-      agent: interactiveProvider(spec, argv, paths.sessions),
+      agent: interactiveProvider(spec, argv),
       sandbox,
       cwd: target.hostRoot,
       branchStrategy: { type: "head" },

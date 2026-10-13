@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import { claudeCode, codex, opencode, pi, type AgentProvider } from "@ai-hero/sandcastle";
 import type { DefaultsFile } from "./defaults.ts";
 import { SANDBOX_HOME } from "./docker.ts";
@@ -169,38 +168,23 @@ export function agentSpec(name: string): AgentSpec {
 
 /**
  * Sandcastle's built-in providers always pass `--model`, which would skip the
- * agent's own model picker. aos keeps the provider (for its session storage
- * settings) and replaces only the interactive argv, so the agent starts exactly
- * as it does when typed on the host.
+ * agent's own model picker. aos keeps the provider and replaces only the
+ * interactive argv, so the agent starts exactly as it does when typed on the host.
  */
-export function interactiveProvider(
-  spec: AgentSpec,
-  argv: readonly string[],
-  sessionsDir: string,
-): AgentProvider {
-  const hostSessionsDir = join(sessionsDir, spec.name);
-  const base = sandcastleProvider(spec.name, hostSessionsDir);
+export function interactiveProvider(spec: AgentSpec, argv: readonly string[]): AgentProvider {
+  const base = sandcastleProvider(spec.name);
   return { ...base, buildInteractiveArgs: () => [...argv] };
 }
 
-function sandcastleProvider(name: AgentName, hostSessionsDir: string): AgentProvider {
+function sandcastleProvider(name: AgentName): AgentProvider {
   // The model argument is unused: buildInteractiveArgs is replaced above.
   switch (name) {
     case "claude":
-      return claudeCode("default", {
-        sessionStorage: {
-          hostProjectsDir: hostSessionsDir,
-          sandboxProjectsDir: `${SANDBOX_HOME}/.claude/projects`,
-        },
-      });
+      return claudeCode("default");
     case "codex":
-      return codex("default", {
-        sessionStorage: { hostSessionsDir, sandboxSessionsDir: `${SANDBOX_HOME}/.codex/sessions` },
-      });
+      return codex("default");
     case "pi":
-      return pi("default", {
-        sessionStorage: { hostSessionsDir, sandboxSessionsDir: `${SANDBOX_HOME}/.pi/agent/sessions` },
-      });
+      return pi("default");
     case "opencode":
       return opencode("default");
   }
