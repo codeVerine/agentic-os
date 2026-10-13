@@ -16,11 +16,14 @@ repository directly, the way earlier versions of `aos` always did. See "Worktree
 ## What runs where
 
 - Agents run only inside the local `aos-dev:local` image (Debian bookworm, Node 24, git, gh, ripgrep, fd,
-  Python, build tools, and pinned `claude`, `codex`, `opencode` and `pi` CLIs). They never run on the Mac.
+  Python, `pre-commit`, build tools, and pinned `claude`, `codex`, `opencode` and `pi` CLIs). They never run
+  on the Mac.
 - Every launch goes through Sandcastle's `interactive()` API with its Docker provider, in `head` mode: the
-  project directory is bind-mounted read-write, so the agent's edits and commits land in the project on the
-  Mac directly.
-- The container sees the project, the project's `.git`, and that agent's own login directory from
+  project directory is bind-mounted read-write, so the agent's file edits land in the project on the Mac
+  directly. In a worktree session its commits are imported into your repository by `aos` ("Worktrees" and
+  "Security" below).
+- The container sees the project, its git metadata (a private copy in a worktree session, your real `.git`
+  with `--here`), and that agent's own login directory from
   `~/AgenticOS/secrets/<agent>/`. It never sees the Mac's `~/.ssh`, `gh` login, `~/.claude`, `~/.codex`,
   OpenCode or Pi homes, and `aos` never reads them. With GitHub access set up ("GitHub access" below) it can
   also pull, push and open pull requests for that one project's repository, and nothing else on GitHub.
@@ -108,15 +111,15 @@ aos opencode --help
 | `aos secrets login <agent> [args]` | Runs the agent's own login flow in a throwaway `aos-dev` container that mounts only that agent's login directory. Extra arguments go to the agent's login command. |
 | `aos claude` / `aos codex` / `aos opencode` / `aos pi` `[args]` | Leases a fresh worktree from the project's treehouse pool and opens the agent's interactive interface in it. See "Worktrees". |
 | `aos claude --here` / etc. `[args]` | Opens the agent's interactive interface in the current directory, no worktree. |
-| `aos worktree list` | Lists this project's aos-leased worktrees: id, agent, lease state, branch, clean/dirty, merged/unmerged. |
-| `aos worktree merge <id>` | Merges that worktree's branch, locally, into the branch checked out in the project's main checkout, whichever of its worktrees you run the command from. |
-| `aos worktree rm <id> [--force]` | (Also spelled `remove`.) Returns the lease and deletes the branch. Refuses while an `aos` process is still running an agent in it, or on uncommitted changes or a branch not yet merged into the main checkout's current branch, unless `--force`. Run from the main checkout or any of its worktrees, it checks against the main checkout. A worktree whose treehouse lease already ended outside `aos` is left alone, since its folder may now belong to another session; only its record and branch are removed. |
+| `aos worktree list` | Lists this project's aos-leased worktrees: id, agent, lease state, branch, clean/dirty, merged/unmerged. A session whose commits are waiting to be imported is imported first (or marked `unsynced` while its agent still runs). |
+| `aos worktree merge <id>` | Imports that session's commits, then merges its branch, locally, into the branch checked out in the project's main checkout, whichever of its worktrees you run the command from. |
+| `aos worktree rm <id> [--force]` | (Also spelled `remove`.) Returns the lease, removes the session's git directory and deletes the branch. Imports the session's commits first, and refuses while an `aos` process is still running an agent in it, or on uncommitted changes or a branch not yet merged into the main checkout's current branch, unless `--force`. Run from the main checkout or any of its worktrees, it checks against the main checkout. A worktree whose treehouse lease already ended outside `aos` is left alone, since its folder may now belong to another session; only its record and branch are removed. |
 | `aos worktree prune` | Runs the same removal as `rm`, without `--force`, on every worktree that is already merged and clean, skipping any an `aos` process is still running an agent in. |
 
 ## Worktrees
 
-`aos <agent>` (without `--here`) leases a worktree from the project's
-[treehouse](https://github.com/kunchenguid/treehouse) pool, checks out a fresh branch under `aos/` on it
+`aos <agent>` (without `--here`) leases a worktree from aos's own
+[treehouse](https://github.com/kunchenguid/treehouse) pool (`~/AgenticOS/state/treehouse`), checks out a fresh branch under `aos/` on it
 (`aos/<agent>/<timestamp>-<random>`), and runs the agent there instead of in the directory you ran `aos`
 from. Several agents, or several runs of the same agent, can then work on one project at once, each on its
 own branch and its own files, without waiting on each other or on git status in a shared checkout.
@@ -125,6 +128,17 @@ own branch and its own files, without waiting on each other or on git status in 
   commit treehouse happened to leave the leased worktree on. `aos` leases with `treehouse get --no-fetch`,
   so a launch never waits on the project's remote and works with it unreachable or without credentials on
   the Mac.
+- **A private git directory per session.** The worktree folder keeps its approved `.git` file on the Mac. Inside
+  the container a different `.git` file points at a git directory under `~/AgenticOS/state/gitdirs/` with
+  its own config, hooks, refs and index, started from your approved config and hooks, that borrows your
+  repository's objects read-only. Agent commits, `npm install` with husky, `pre-commit install` and the like
+  therefore change only that session. About a second after each agent commit, and again when the session
+  ends, `aos` imports the session branch into your repository (through a throwaway container with no
+  network), so `git log` and `git status` in the worktree stay current. If you commit on that branch from the
+  Mac meanwhile, those commits are never discarded: a session that does not contain them is imported as
+  `<branch>-<n>`. Your own local branches are visible in the session as `host/<branch>` (read-only).
+  Branches the agent makes besides its session branch stay in the session unless it pushes them. See
+  [docs/security.md](docs/security.md).
 - **The lease stays held.** Unlike a plain `treehouse get`, `aos` never returns the lease when the agent's
   session ends: the worktree and its branch are kept until you explicitly run `aos worktree rm` (or
   `prune`), so treehouse's own prune and destroy leave it alone in the meantime. Landing the work: run
@@ -174,17 +188,22 @@ own branch and its own files, without waiting on each other or on git status in 
 - **`--here` is unaffected.** `aos <agent> --here` never leases a worktree, never creates a branch, and its
   resume/continue flags behave exactly as they did before worktree support: scoped to whatever directory you
   ran it from.
-- **Config file.** treehouse's own `treehouse.toml` (`treehouse init` to create one) controls where the pool
-  lives and how large it grows; `aos` does not manage that file. Without one, treehouse uses its own
-  defaults.
+- **Its own pool.** aos leases with `treehouse --root ~/AgenticOS/state/treehouse`, so a slot an agent wrote
+  ignored files into (`node_modules`, husky's generated stubs) is only ever leased to another agent container,
+  never to your own `treehouse get` or another tool. A plain `treehouse status` shows only your default pool;
+  `aos worktree list` shows aos's. Worktrees leased before this change stay in the default pool until
+  removed, and the first session in aos's pool builds its dependencies again. treehouse's own
+  `treehouse.toml` still controls how large a pool grows; `aos` does not manage that file.
+- **Hooks keep working.** The repository's git hooks run inside the container for the agent's commits and
+  failures stay visible. Husky, pre-commit, lefthook and a custom `core.hooksPath` or copy-installer all
+  work, and `pre-commit` is in the image with a per-project cache. When a hook cannot run in the container
+  (lefthook before `npm install`, a Mac-only interpreter path), `aos` prints one line with the fix at launch.
 - **Out of scope.** The host `aos` commands do not open a PR or push anywhere, and they never fetch from the
   repository's remote (the lease uses `--no-fetch`; only `treehouse` run by hand does).
   Agents can pull, push and open PRs through their own GitHub access ("GitHub access" below); "merge" is a
-  local `git merge`, same as you'd run by hand, and every host git call `aos worktree merge/rm/prune` makes
-  runs with the hook and fsmonitor protection described in "Security" below, which does not cover filter
-  drivers, merge drivers or `gpg.program`. Worktrees narrow the blast radius of a bad edit to their own
-  branch, but a leased worktree's `.git` is still the project's real, shared one, and `aos` adds no other
-  git-tampering protection beyond that.
+  local `git merge`, same as you'd run by hand. A reviewed, grouped approval before merging the changes that
+  will run on your Mac (hook scripts and hook-manager config) is not built; review the branch's diff yourself
+  ("Security").
 
 ## Subscriptions and API keys
 
@@ -396,24 +415,34 @@ API keys passed to it, and write anything in the project. See "Deliberately skip
 
 ## Security
 
-> **TODO:** a git guard that blocks and reviews agent changes to git hooks and executable git config is
-> designed but not built. The design, the open gaps and the decisions still to make are in
-> [docs/security.md](docs/security.md).
+The threat is an agent that was turned mid-session (prompt injection through an issue, a web page or a
+dependency) and runs with full autonomy. Details, labs and what is deferred are in
+[docs/security.md](docs/security.md).
 
-Agents can write anything into a project, including `.git/config`, `.git/hooks/*` and files that git runs
-filters or an fsmonitor on. Every host git call `aos` itself makes, for Sandcastle and for its own worktree
-commands (`aos worktree merge/rm/prune`, and branch setup on a fresh worktree), runs with
-`core.hooksPath=/dev/null` and `core.fsmonitor=false`. That stops hooks and fsmonitor only. Filter drivers,
-merge drivers and `gpg.program` planted in `.git/config` still run on the Mac, including during
-`aos worktree list` and `aos worktree merge`. Your own git commands, editor integrations and tools such as
-`gh` or `pre-commit` have no protection at all.
+**Worktree sessions (`aos <agent>`, the default) close every git channel that never shows up in a diff.**
+The container has no writable path into your repository's `.git`: not its config, hooks, refs, `commondir`,
+worktree admin files or objects. An agent's `core.fsmonitor`, filter or merge driver, planted hook, moved
+branch or `remote.origin.url` change stays in its session's private git directory, which host git never
+opens. aos has its own treehouse pool, so agent-written ignored files do not reach a slot you lease, and each
+project's GitHub repository is pinned at its first launch so a retargeted `origin` cannot get a token for
+another repository.
 
-- Do not run `aos worktree list` or `aos worktree merge` in a project you suspect an agent tampered with.
-  Inspect `.git/config` and `.git/info/attributes` first.
-- Do not run hook-sensitive git commands (`commit`, `checkout`, `merge`, `pull`, `rebase`, `push`) on the Mac
-  inside a project an agent has worked in. Review the changes from inside an agent session instead (for
-  example `!git diff` in Pi or Codex). If you must use git on the Mac there, inspect `.git/config`,
-  `.git/hooks` and `.git/info/attributes` first.
+What is **not** closed:
+
+- **Tracked hook files are part of your diff.** `.husky/*`, `.githooks/*`, `lefthook.yml`,
+  `.pre-commit-config.yaml`, scripts they call and `package.json` install scripts run on the Mac after you merge
+  or run git inside the worktree. Review the branch before merging. A grouped landing review is designed
+  but not built.
+- **Running git or `npm` inside an agent worktree folder on the Mac** uses your approved hooks on agent-written
+  files. The `includeIf "onbranch:aos/**"` guard that would turn that off is designed but not built. Merge
+  from the main checkout instead.
+- **`--here` is unprotected.** It runs in your own checkout with read-write access to your real `.git`, so
+  every channel above applies, including the config, hooks and refs. Use worktree mode for untrusted agents.
+- Docker's default network, secrets in the container environment and the other items under "Deliberately
+  skipped for now".
+
+Every host git call `aos` itself makes still runs with `core.hooksPath=/dev/null` and `core.fsmonitor=false`.
+Your own git commands in a project you ran `--here` in have no protection.
 
 ## Deliberately skipped for now
 

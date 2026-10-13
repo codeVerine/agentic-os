@@ -1,6 +1,6 @@
 # TODO
 
-Work that is understood but not built yet. The git guard is parked in [docs/security.md](docs/security.md).
+Work that is understood but not built yet. The grouped landing review and the `includeIf` guard are listed under "Deferred work" in [docs/security.md](docs/security.md).
 
 ## Update the image's agent CLIs: `aos image update`
 

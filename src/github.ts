@@ -4,6 +4,7 @@ import {
   constants as fsConstants,
   existsSync,
   fstatSync,
+  linkSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -13,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { AosError } from "./errors.ts";
 import { assertPrivate, ensurePrivateDir, withFileLock, writePrivateFileAtomic } from "./fsutil.ts";
 import { spawnGit } from "./git.ts";
@@ -133,6 +134,60 @@ export function parseRepoPath(path: string): RepoRef | undefined {
 
 const sameRepo = (a: RepoRef, b: RepoRef): boolean =>
   a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase();
+
+function readPin(file: string): RepoRef | "invalid" | undefined {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : "invalid";
+  }
+  try {
+    const parsed = JSON.parse(text) as { owner?: unknown; name?: unknown };
+    const repo = typeof parsed.owner === "string" && typeof parsed.name === "string" ? repoRef(parsed.owner, parsed.name) : undefined;
+    return repo ?? "invalid";
+  } catch {
+    return "invalid";
+  }
+}
+
+/**
+ * Pins the GitHub repository a project may get tokens for to the one its origin remote names at its first
+ * launch, in aos state the container never sees. An origin that names a different repository later (an
+ * agent rewrote the shared config, or the remote really changed) must not retarget the App's token, which
+ * can reach every repository it is installed on. Returns why a token must not be minted, or undefined:
+ * `host` says what to do on the Mac, `container` carries no host path.
+ */
+export function enforceRepoPin(file: string, repo: RepoRef): { host: string; container: string } | undefined {
+  ensurePrivateDir(dirname(file));
+  const invalid = {
+    host: `${file} is not a valid repository pin. Delete it to pin this project to ${repoSlug(repo)} again.`,
+    container: `This project's GitHub repository pin is unreadable, so aos gives no GitHub access. Fix it on the Mac.`,
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const pinned = readPin(file);
+    if (pinned === "invalid") return invalid;
+    if (pinned !== undefined) {
+      if (sameRepo(pinned, repo)) return undefined;
+      const mismatch = `This project's GitHub repository is pinned to ${repoSlug(pinned)}, but its origin remote now names ${repoSlug(repo)}. `;
+      return {
+        host: `${mismatch}aos will not mint a token for a different repository. If the repository really moved, delete ${file} and start a new session.`,
+        container: `${mismatch}aos gives no GitHub access in this session. Fix it on the Mac.`,
+      };
+    }
+    const staging = `${file}.${process.pid}.tmp`;
+    writeFileSync(staging, `${JSON.stringify({ owner: repo.owner, name: repo.name })}\n`, { mode: 0o600 });
+    try {
+      linkSync(staging, file);
+      return undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    } finally {
+      rmSync(staging, { force: true });
+    }
+  }
+  return invalid;
+}
 
 function base64url(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
@@ -287,6 +342,8 @@ export interface GithubAccessOptions {
   readonly secrets: SecretsEnv;
   /** Host directory of the repository whose origin remote names the one repository this launch may use. */
   readonly repoRoot: string;
+  /** File in aos state that pins the project's GitHub repository at its first launch. */
+  readonly pinFile: string;
   /** Host directory created for this launch and mounted only at `containerSpoolDir`; the container cannot write above it. */
   readonly spoolDir: string;
   readonly containerSpoolDir: string;
@@ -345,6 +402,12 @@ export function prepareGithubAccess(options: GithubAccessOptions): GithubAccess 
         ? `This project's origin remote ${origin.stdout.trim()} is not an https://github.com remote, so aos has no GitHub access for it.`
         : `This project has no origin remote, so aos has no GitHub repository to give access to.`,
     );
+  }
+
+  const pinProblem = enforceRepoPin(options.pinFile, remote.repo);
+  if (pinProblem !== undefined) {
+    options.notify?.(pinProblem.host);
+    return unavailable(pinProblem.container);
   }
 
   const spool = options.spoolDir;

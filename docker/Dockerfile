@@ -14,6 +14,7 @@ RUN apt-get update \
     openssh-client \
     procps \
     python3 \
+    python3-venv \
     ripgrep \
   && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
   && locale-gen \
@@ -28,6 +29,14 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get update \
   && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
+
+# pre-commit is the one hook runner a container cannot install for itself: the agent user is not root and
+# the base image has no pip. Projects whose hooks use it (`pre-commit install`) keep working in a session;
+# husky and lefthook come from the project's own node_modules. The hook environments pre-commit builds are
+# cached per project in a directory aos mounts at ~/.cache/pre-commit.
+RUN python3 -m venv /opt/pre-commit \
+  && /opt/pre-commit/bin/pip install --no-cache-dir pre-commit==4.7.0 \
+  && ln -s /opt/pre-commit/bin/pre-commit /usr/local/bin/pre-commit
 
 RUN npm install -g \
     @anthropic-ai/claude-code@2.1.283 \
@@ -52,7 +61,10 @@ COPY codex-refresh.mjs aos-github.mjs /usr/local/lib/aos/
 # credential helper, and the gh wrapper does the same before running the real gh.
 # Neither holds a credential; src/github.ts documents the channel.
 COPY --chmod=755 gh-wrapper.sh /usr/local/bin/gh
-RUN printf '[credential "https://github.com"]\n\thelper = !node /usr/local/lib/aos/aos-github.mjs credential\n\tuseHttpPath = true\n' > /etc/gitconfig
+# /mnt/aos-host-git is the read-only mount of the repository's own git directory, the session's `host` remote.
+# Git's local transport drops the command-line safe.directory aos sets, and the mount root is not owned by the
+# agent user, so the path is trusted here. The path is fixed, aos-owned and read-only.
+RUN printf '[credential "https://github.com"]\n\thelper = !node /usr/local/lib/aos/aos-github.mjs credential\n\tuseHttpPath = true\n[safe]\n\tdirectory = /mnt/aos-host-git\n' > /etc/gitconfig
 
 # Sandcastle's docker provider runs the container as --user <host uid>:<host gid>
 # and refuses to start when the image user does not match, so the base image's

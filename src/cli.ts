@@ -32,9 +32,10 @@ const USAGE = `Usage: aos <command>
 Agents run inside a Sandcastle Docker sandbox. Run agent commands from any
 directory inside a git repository with at least one commit; arguments after
 the agent name go to the agent CLI. Each launch gets its own git worktree from
-the project's treehouse pool, on a fresh branch under aos/; an agent's own
-resume/continue flags land back in the worktree that conversation belongs to.
-"aos <agent> --here" skips worktrees and runs in the current repository.`;
+aos's own treehouse pool, on a fresh branch under aos/ with a private git directory
+the agent's commits are imported from; an agent's own resume/continue flags land
+back in the worktree that conversation belongs to. "aos <agent> --here" skips
+worktrees and runs in the current repository, with no git protection.`;
 
 async function main(argv: readonly string[]): Promise<number> {
   const hostEnv = { ...process.env };

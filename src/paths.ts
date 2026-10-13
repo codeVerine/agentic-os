@@ -17,6 +17,14 @@ export interface AosPaths {
   readonly run: string;
   /** One JSON registry file per project (by git-common-dir hash) of aos-leased worktrees. */
   readonly worktrees: string;
+  /** Private git directories of aos worktree sessions, one folder per project. Never mounted whole. */
+  readonly gitdirs: string;
+  /** The treehouse pool root for aos worktrees, kept apart from the user's own pool. */
+  readonly treehouse: string;
+  /** One pre-commit cache folder per project, mounted into containers only. */
+  readonly preCommitCache: string;
+  /** One file per project that pins the GitHub repository aos may mint tokens for. */
+  readonly githubRepos: string;
 }
 
 export interface ProjectLocation {
@@ -48,6 +56,10 @@ export function aosPaths(root: string): AosPaths {
     githubTokens: join(secrets, "github-tokens"),
     run: join(root, "state", "run"),
     worktrees: join(root, "state", "worktrees"),
+    gitdirs: join(root, "state", "gitdirs"),
+    treehouse: join(root, "state", "treehouse"),
+    preCommitCache: join(root, "state", "pre-commit"),
+    githubRepos: join(root, "state", "github-repos"),
   };
 }
 

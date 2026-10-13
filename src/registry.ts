@@ -22,6 +22,12 @@ export interface WorktreeRecord {
   readonly subdir?: string;
   /** Commit the branch was created from; set by earlier aos versions, no longer written or read. */
   readonly baseRev?: string;
+  /** treehouse root this worktree was leased from; absent for worktrees leased from the user's default pool. */
+  readonly poolRoot?: string;
+  /** Tip of the session branch as last imported into the repository; absent until the session has a private git directory. */
+  importedTip?: string;
+  /** Branch that receives imports once the session branch diverged from commits made on the Mac; absent otherwise. */
+  importBranch?: string;
   readonly createdAt: string;
   lastUsedAt: string;
   /** treehouse lease id, held from creation until `aos worktree rm`. */

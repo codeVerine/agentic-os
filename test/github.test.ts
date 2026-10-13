@@ -4,7 +4,7 @@ import { createVerify, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { AosError } from "../src/errors.ts";
@@ -142,6 +142,7 @@ function session(fake: FakeGithub, repoRoot: string, tokensDir: string, notify?:
   const access = prepareGithubAccess({
     secrets,
     repoRoot,
+    pinFile: join(base, "pins", `${basename(repoRoot)}.json`),
     spoolDir: spool,
     containerSpoolDir: "/mnt/aos-launch/run/github",
     tokensDir,
@@ -415,6 +416,7 @@ describe("prepareGithubAccess", () => {
     const access = prepareGithubAccess({
       secrets: parseSecretsEnv(`AOS_GITHUB_APP_ID=${APP_ID}\nAOS_GITHUB_APP_KEY_FILE=${key}\n`),
       repoRoot: gitRepo("vanishing-key", "https://github.com/acme/widgets.git"),
+      pinFile: join(base, "pins", "vanishing-key.json"),
       spoolDir: spool,
       containerSpoolDir: "/mnt/aos-launch/run/github",
       tokensDir: join(base, "tokens-vanishing"),
@@ -463,6 +465,7 @@ describe("prepareGithubAccess", () => {
     const access = prepareGithubAccess({
       secrets: parseSecretsEnv(""),
       repoRoot: gitRepo("unconfigured-repo", "https://github.com/acme/widgets.git"),
+      pinFile: join(base, "pins", "unconfigured-repo.json"),
       spoolDir: spool,
       containerSpoolDir: "/mnt/aos-launch/run/github",
       tokensDir: join(base, "tokens-unconfigured"),
@@ -477,6 +480,7 @@ describe("prepareGithubAccess", () => {
     const access = prepareGithubAccess({
       secrets: parseSecretsEnv(`AOS_GITHUB_APP_ID=${APP_ID}\nAOS_GITHUB_APP_KEY_FILE=${missingKey}\n`),
       repoRoot: gitRepo("misconfigured-key", "https://github.com/acme/widgets.git"),
+      pinFile: join(base, "pins", "misconfigured-key.json"),
       spoolDir: join(base, "spool-misconfigured"),
       containerSpoolDir: "/mnt/aos-launch/run/github",
       tokensDir: join(base, "tokens-misconfigured"),
@@ -487,6 +491,71 @@ describe("prepareGithubAccess", () => {
     assert.equal(notes.length, 1);
     assert.match(notes[0] ?? "", /does not exist/);
     assert.ok(notes[0]?.includes(missingKey));
+  });
+});
+
+describe("repository pin", () => {
+  let fake: FakeGithub;
+  before(async () => {
+    fake = await startFakeGithub();
+  });
+  after(() => fake.close());
+
+  const setOrigin = (repo: string, url: string): void => {
+    execFileSync("git", ["-C", repo, "remote", "set-url", "origin", url]);
+  };
+
+  test("the first launch pins the repository and a later retarget of origin gets no token", () => {
+    const repo = gitRepo("pin-retarget", "https://github.com/acme/widgets.git");
+    const notes: string[] = [];
+    const first = session(fake, repo, join(base, "tokens-pin"), (note) => notes.push(note));
+    first.access.stop();
+    assert.equal(first.access.env.AOS_GITHUB_STATUS, undefined);
+    assert.match(readFileSync(join(base, "pins", "pin-retarget.json"), "utf8"), /"owner":"acme","name":"widgets"/);
+
+    setOrigin(repo, "https://github.com/acme/other-private-repo.git");
+    const second = session(fake, repo, join(base, "tokens-pin"), (note) => notes.push(note));
+    assert.equal(second.access.env.AOS_GITHUB_SPOOL, undefined);
+    assert.match(second.access.env.AOS_GITHUB_STATUS ?? "", /pinned to acme\/widgets.*names acme\/other-private-repo/);
+    assert.equal(notes.length, 1);
+    assert.ok(notes[0]?.includes(join(base, "pins", "pin-retarget.json")));
+    assert.ok(!(second.access.env.AOS_GITHUB_STATUS ?? "").includes(base));
+    assert.equal(readdirSync(second.spool).length, 0);
+  });
+
+  test("the pin matches case-insensitively, so a renamed-case origin keeps working", () => {
+    const repo = gitRepo("pin-case", "https://github.com/Acme/Widgets.git");
+    session(fake, repo, join(base, "tokens-pin-case")).access.stop();
+    setOrigin(repo, "https://github.com/acme/widgets");
+    const again = session(fake, repo, join(base, "tokens-pin-case"));
+    assert.ok(again.access.env.AOS_GITHUB_SPOOL);
+    again.access.stop();
+  });
+
+  test("deleting the pin file accepts the repository origin names now", () => {
+    const repo = gitRepo("pin-reset", "https://github.com/acme/widgets.git");
+    session(fake, repo, join(base, "tokens-pin-reset")).access.stop();
+    setOrigin(repo, "https://github.com/acme/moved.git");
+    assert.match(session(fake, repo, join(base, "tokens-pin-reset")).access.env.AOS_GITHUB_STATUS ?? "", /pinned to/);
+    rmSync(join(base, "pins", "pin-reset.json"));
+    const accepted = session(fake, repo, join(base, "tokens-pin-reset"));
+    assert.ok(accepted.access.env.AOS_GITHUB_SPOOL);
+    accepted.access.stop();
+  });
+
+  test("an unreadable pin file is never replaced silently", () => {
+    const repo = gitRepo("pin-corrupt", "https://github.com/acme/widgets.git");
+    mkdirSync(join(base, "pins"), { recursive: true });
+    writeFileSync(join(base, "pins", "pin-corrupt.json"), "{not json");
+    const launched = session(fake, repo, join(base, "tokens-pin-corrupt"));
+    assert.match(launched.access.env.AOS_GITHUB_STATUS ?? "", /repository pin is unreadable/);
+    assert.equal(readFileSync(join(base, "pins", "pin-corrupt.json"), "utf8"), "{not json");
+  });
+
+  test("an ssh origin is not pinned, so fixing it to https pins the fixed value", () => {
+    const repo = gitRepo("pin-ssh", "git@github.com:acme/widgets.git");
+    session(fake, repo, join(base, "tokens-pin-ssh"));
+    assert.equal(existsSync(join(base, "pins", "pin-ssh.json")), false);
   });
 });
 
