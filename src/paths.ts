@@ -122,6 +122,17 @@ export function assertProjectEnvNotLinked(root: string): void {
 }
 
 /**
+ * Host path of the shared git directory Sandcastle mounts at that same path for a linked worktree, or
+ * undefined when `root/.git` is a directory (a main checkout keeps its git directory inside the project mount).
+ */
+export function sharedGitDirMount(root: string): string | undefined {
+  const dotGit = join(root, ".git");
+  if (lstatSync(dotGit, { throwIfNoEntry: false })?.isFile() !== true) return undefined;
+  const gitdir = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"))?.[1]?.trim();
+  return gitdir === undefined ? undefined : resolve(gitdir, "..", "..");
+}
+
+/**
  * Container directory name for a project: its sanitised basename plus a short hash of the real host path,
  * so ~/a/app and ~/b/app get different container paths and never share agent history or trust entries.
  */
