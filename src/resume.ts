@@ -1,6 +1,7 @@
 import { findClaudeSessionOnHost, findCodexSessionOnHost } from "@ai-hero/sandcastle";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import type { AgentName } from "./agents.ts";
 import type { WorktreeRecord } from "./registry.ts";
 
@@ -101,25 +102,33 @@ async function sessionContainerDir(
     }
     case "codex": {
       const found = await findCodexSessionOnHost(sessionId, join(agentStateDir, "sessions")).catch(() => undefined);
-      return found?.path ? codexSessionCwd(found.path) : undefined;
+      return found?.path ? await codexSessionCwd(found.path) : undefined;
     }
     case "pi":
       return findPiSessionFolder(join(agentStateDir, "sessions"), sessionId);
   }
 }
 
-/** The `cwd` a Codex rollout file was recorded with, from its leading `session_meta` line's payload. */
-function codexSessionCwd(filePath: string): string | undefined {
+/**
+ * The `cwd` a Codex rollout file was recorded with, from its leading `session_meta` line's payload.
+ * Streams only up to the first non-empty line: a rollout grows with the whole conversation.
+ */
+async function codexSessionCwd(filePath: string): Promise<string | undefined> {
+  const stream = createReadStream(filePath, { encoding: "utf8" });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
   try {
-    const firstLine = readFileSync(filePath, "utf8")
-      .split("\n")
-      .find((line) => line.trim() !== "");
-    if (!firstLine) return undefined;
-    const parsed = JSON.parse(firstLine) as { type?: unknown; payload?: { cwd?: unknown } };
-    const cwd = parsed.type === "session_meta" ? parsed.payload?.cwd : undefined;
-    return typeof cwd === "string" ? cwd : undefined;
+    for await (const line of lines) {
+      if (line.trim() === "") continue;
+      const parsed = JSON.parse(line) as { type?: unknown; payload?: { cwd?: unknown } };
+      const cwd = parsed.type === "session_meta" ? parsed.payload?.cwd : undefined;
+      return typeof cwd === "string" ? cwd : undefined;
+    }
+    return undefined;
   } catch {
     return undefined;
+  } finally {
+    lines.close();
+    stream.destroy();
   }
 }
 
