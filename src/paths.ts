@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AosError } from "./errors.ts";
+import { readTextFileInside } from "./fsutil.ts";
 import { gitOrEmpty } from "./git.ts";
 
 export interface AosPaths {
@@ -83,7 +84,11 @@ export function locateProject(cwd: string): ProjectLocation {
  */
 export function assertGitMetadataMountable(root: string): void {
   const dotGit = join(root, ".git");
-  if (lstatSync(dotGit, { throwIfNoEntry: false })?.isFile() !== true) return;
+  const entry = lstatSync(dotGit, { throwIfNoEntry: false });
+  if (entry?.isSymbolicLink()) {
+    throw new AosError(`${dotGit} is a symlink, and the sandbox would mount whatever it points at. Replace it with the real .git directory or file.`);
+  }
+  if (entry?.isFile() !== true) return;
   const superproject = gitOrEmpty(root, "rev-parse", "--show-superproject-working-tree");
   if (superproject !== "") {
     throw new AosError(
@@ -106,6 +111,14 @@ export function assertGitMetadataMountable(root: string): void {
       `${root} keeps its git directory at ${gitdir}, outside the project, and is not a linked worktree, so the sandbox would have to mount ${mounted}. Run aos from a checkout whose .git is a directory, or from a linked worktree.`,
     );
   }
+}
+
+/**
+ * Sandcastle copies the values in `<root>/.sandcastle/.env` into the container, and reads that file on the host
+ * through any symlink. A symlink planted in the project would send a host-only file's values to the agent.
+ */
+export function assertProjectEnvNotLinked(root: string): void {
+  readTextFileInside(root, join(root, ".sandcastle", ".env"));
 }
 
 /**

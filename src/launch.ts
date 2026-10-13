@@ -10,7 +10,7 @@ import { cleanupOnExit } from "./exit.ts";
 import { gitOrEmpty } from "./git.ts";
 import { prepareGithubAccess } from "./github.ts";
 import { terminalEnv } from "./hostenv.ts";
-import { type AosPaths, assertInitialised, locateProject, type ProjectLocation } from "./paths.ts";
+import { type AosPaths, assertInitialised, assertProjectEnvNotLinked, locateProject, type ProjectLocation } from "./paths.ts";
 import { ensureAgentStateDirs, readSecretsEnv, selectAgentEnv } from "./secrets.ts";
 import { containerWorkdir, resolveWorktreeTarget } from "./worktree.ts";
 
@@ -41,11 +41,13 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
     ? { hostRoot: project.root, sandboxName: project.sandboxName, branch: undefined }
     : await resolveWorktreeTarget(spec.name, agentArgs, project, paths, agentDir);
 
+  assertProjectEnvNotLinked(target.hostRoot);
+
   // Sandcastle bind-mounts every project at the same /home/agent/workspace.
   // Agents key transcripts, trust and memory by working directory, so the agent
   // runs from a second, per-project mount of the same host directory instead.
   const sandboxProjectRoot = `${SANDBOX_PROJECTS_DIR}/${target.sandboxName}`;
-  spec.trustProject?.(agentDir, sandboxProjectRoot);
+  await spec.trustProject?.(agentDir, sandboxProjectRoot);
   const workdir = containerWorkdir(sandboxProjectRoot, target.hostRoot, project.subdir);
   const setup = spec.launchSetup ? `${spec.launchSetup} && ` : "";
   const argv = ["sh", "-c", `cd "$1" && shift && ${setup}exec "$@"`, "aos", workdir, spec.command, ...agentArgs];

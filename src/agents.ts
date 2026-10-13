@@ -32,7 +32,7 @@ export interface AgentSpec {
   /** Environment for `aos <agent>` launches only, on top of configEnv. */
   readonly launchEnv: Readonly<Record<string, string>>;
   /** Marks the project trusted in the agent's state, given the project root in the container. */
-  readonly trustProject?: (agentDir: string, sandboxProjectRoot: string) => void;
+  readonly trustProject?: (agentDir: string, sandboxProjectRoot: string) => Promise<void>;
   /**
    * Full-autonomy defaults for agents whose config has no lower layer than the
    * user's own file: aos fills these keys into that file when they are absent, and
