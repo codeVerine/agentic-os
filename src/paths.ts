@@ -23,6 +23,8 @@ export interface AosPaths {
   readonly treehouse: string;
   /** One pre-commit cache folder per project, mounted into containers only. */
   readonly preCommitCache: string;
+  /** Linux developer tools installed by agents, separated by the image toolchain. */
+  readonly developerTools: string;
   /** One file per project that pins the GitHub repository aos may mint tokens for. */
   readonly githubRepos: string;
   /** User-owned binaries aos manages itself (vendored treehouse), resolved by absolute path. */
@@ -61,6 +63,7 @@ export function aosPaths(root: string): AosPaths {
     gitdirs: join(root, "state", "gitdirs"),
     treehouse: join(root, "state", "treehouse"),
     preCommitCache: join(root, "state", "pre-commit"),
+    developerTools: join(root, "state", "developer-tools"),
     githubRepos: join(root, "state", "github-repos"),
     bin: join(root, "bin"),
   };

@@ -1,4 +1,11 @@
-FROM node:24.21.0-bookworm-slim
+ARG NODE_VERSION=24.21.0
+FROM node:${NODE_VERSION}-bookworm-slim
+ARG NODE_VERSION
+ARG TARGETARCH
+
+LABEL aos.npm-toolchain="linux-${TARGETARCH}-bookworm-node${NODE_VERSION}"
+
+RUN test -n "$TARGETARCH"
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -16,10 +23,14 @@ RUN apt-get update \
     python3 \
     python3-venv \
     ripgrep \
+    tmux \
+    fonts-noto-cjk \
   && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
   && locale-gen \
   && ln -s /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/*
+
+RUN printf '%s\n' 'set -g default-terminal "screen-256color"' > /etc/tmux.conf
 
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -44,6 +55,12 @@ RUN npm install -g \
     opencode-ai@1.18.33 \
     @earendil-works/pi-coding-agent@0.87.1 \
   && npm cache clean --force
+
+RUN npm install -g playwright@1.64.0 \
+  && PLAYWRIGHT_BROWSERS_PATH=/opt/playwright playwright install --with-deps chromium \
+  && ln -s "$(PLAYWRIGHT_BROWSERS_PATH=/opt/playwright node -e "console.log(require('/usr/local/lib/node_modules/playwright').chromium.executablePath())")" /usr/local/bin/aos-chromium \
+  && chmod -R a+rX /opt/playwright \
+  && rm -rf /var/lib/apt/lists/*
 
 # Agents run with full autonomy by default: no approval prompts, no inner sandbox.
 # The container is the sandbox. Codex's own bubblewrap sandbox could not create
@@ -83,7 +100,9 @@ RUN install -d -o "$AGENT_UID" -g "$AGENT_GID" \
     /home/agent/.config \
     /home/agent/.config/opencode \
     /home/agent/.local \
+    /home/agent/.local/bin \
     /home/agent/.local/share \
+    /home/agent/.local/share/aos-tools \
     /home/agent/.local/share/opencode \
     /home/agent/.local/state \
     /home/agent/.pi \
@@ -92,7 +111,13 @@ RUN install -d -o "$AGENT_UID" -g "$AGENT_GID" \
 
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
-    PATH=/home/agent/.local/bin:$PATH \
+    NPM_CONFIG_PREFIX=/home/agent/.local/share/aos-tools \
+    PATH=/home/agent/.local/share/aos-tools/bin:/home/agent/.local/bin:$PATH \
+    NO_MISTAKES_INSTALL_DIR=/home/agent/.local/share/aos-tools/bin \
+    NO_MISTAKES_LINK_DIR=/home/agent/.local/share/aos-tools/bin \
+    CHROME_DEVTOOLS_AXI_EXECUTABLE_PATH=/usr/local/bin/aos-chromium \
+    CHROME_DEVTOOLS_AXI_CHROME_ARGS="--no-sandbox --disable-dev-shm-usage" \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
     DISABLE_AUTOUPDATER=1
 
 USER ${AGENT_UID}:${AGENT_GID}

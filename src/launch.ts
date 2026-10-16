@@ -53,7 +53,14 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
   assertCommittedGitRepo(project);
   assertInitialised(paths);
   const ids = hostIds();
-  assertImageMatchesHost(ids);
+  const image = assertImageMatchesHost(ids);
+  const toolchain = image.Labels?.["aos.npm-toolchain"];
+  if (!toolchain || !/^linux-(?:amd64|arm64)-bookworm-node\d+\.\d+\.\d+$/.test(toolchain)) {
+    throw new AosError(`Image ${IMAGE} has no valid aos.npm-toolchain label. Run "aos image build" again.`);
+  }
+  const developerTools = join(paths.developerTools, toolchain);
+  mkdirSync(developerTools, { recursive: true });
+  mkdirSync(join(developerTools, "bin"), { recursive: true });
 
   const agentDir = ensureAgentStateDirs(paths.secrets, spec);
   for (const defaults of spec.autonomyDefaults) applyDefaults(agentDir, defaults);
@@ -141,6 +148,8 @@ export async function launchAgent(spec: AgentSpec, rawArgs: readonly string[], o
         ? sessionGitMounts(commonDir, session, target.hostRoot, sandboxProjectRoot)
         : [{ hostPath: target.hostRoot, sandboxPath: sandboxProjectRoot }]),
       { hostPath: preCommitCache, sandboxPath: `${SANDBOX_HOME}/.cache/pre-commit` },
+      { hostPath: developerTools, sandboxPath: `${SANDBOX_HOME}/.local/share/aos-tools` },
+      { hostPath: join(developerTools, "bin"), sandboxPath: `${SANDBOX_HOME}/.local/bin` },
       ...spec.stateMounts.map((mount) => ({
         hostPath: mount.subdir ? join(agentDir, mount.subdir) : agentDir,
         sandboxPath: mount.sandboxPath,

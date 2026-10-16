@@ -82,9 +82,12 @@ export function imageProblem(
   return undefined;
 }
 
-export function assertImageMatchesHost(ids: HostIds, image = IMAGE): void {
-  const problem = imageProblem(imageConfig(image), ids, contextHash(), image);
+export function assertImageMatchesHost(ids: HostIds, image = IMAGE): ImageConfig {
+  const config = imageConfig(image);
+  if (config === undefined) throw new AosError(`Image ${image} is not built. Run "aos image build" first.`);
+  const problem = imageProblem(config, ids, contextHash(), image);
   if (problem) throw new AosError(problem);
+  return config;
 }
 
 export function buildImage(ids: HostIds, extraArgs: readonly string[]): number {

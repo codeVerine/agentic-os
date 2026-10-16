@@ -37,6 +37,46 @@ repository directly, the way earlier versions of `aos` always did. See "Worktree
   shared by every project, so the Mac's own agent logins are never touched, and a token refreshed in a
   container never logs the Mac's own tools out.
 
+## Persistent developer tools and browser
+
+Global npm installs made by an agent use `/home/agent/.local/share/aos-tools` as their npm prefix. AOS mounts
+that directory from `~/AgenticOS/state/developer-tools/` into every agent container. Its `bin` directory is also
+mounted at `~/.local/bin`, so global npm tools and binaries installed there survive container removal and later
+sessions. Install Firstmate tools when needed:
+
+```sh
+npm install -g gh-axi && gh-axi setup hooks
+npm install -g tasks-axi
+npm install -g quota-axi
+npm install -g lavish-axi && lavish-axi setup hooks
+npm install -g chrome-devtools-axi && chrome-devtools-axi setup hooks
+```
+
+`no-mistakes` is a Linux release binary rather than an npm package. The image points its official installer at
+the same mounted tool directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh
+```
+
+This directory holds Linux executables and npm packages, not Mac tools. AOS separates it by Linux architecture,
+Debian release and the image's exact Node version, keeping native npm modules with a compatible Node ABI. A
+rebuild with the same toolchain reuses installed tools. A different architecture or Node version gets a new
+directory; old installs remain on disk but must be reinstalled into the new one. The npm download cache alone
+is not used as installed tool storage.
+
+The image includes Playwright 1.64.0 and its matching Chromium, plus the browser libraries and fonts. The
+non-root agent launches this browser through `CHROME_DEVTOOLS_AXI_EXECUTABLE_PATH`; AOS configures
+`--no-sandbox` and `--disable-dev-shm-usage` because Sandcastle does not configure Chromium's inner sandbox or
+shared-memory size; the AOS container supplies the isolation boundary. Changing the Playwright pin and running
+`aos image build` replaces the image's browser and executable path together. The browser is image content, not
+part of the persistent tool directory, so it is refreshed by rebuilding the image.
+
+The image also includes Debian's tmux package, and AOS pre-creates its writable `~/.local/bin` install path.
+Firstmate workers can use tmux without building it from source or needing root; treehouse binaries installed
+there persist with the rest of the toolchain. Tmux uses `screen-256color` in the image so it does not require a
+`tmux-256color` terminfo entry that Debian Bookworm does not provide by default.
+
 ## Requirements
 
 - macOS with Docker Desktop running. Linux with Docker should work too but is untested.
@@ -55,7 +95,7 @@ cd agentic-os
 npm install            # also compiles TypeScript to dist/
 npm link               # puts `aos` on your PATH
 
-aos init               # creates ~/AgenticOS/{secrets,projects}; secrets/ is mode 0700
+aos init               # creates projects, state/developer-tools, and private secrets
 aos treehouse install  # installs the pinned treehouse CLI into ~/AgenticOS/bin (no sudo)
 aos image build        # builds aos-dev:local with your Mac UID/GID (a few minutes the first time)
 aos doctor             # checks Docker, the image, each agent's login and keys, and leftover containers
